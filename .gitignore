@@ -1,0 +1,19 @@
+﻿# Tauri & Rust build artifacts
+src-tauri/target/
+target/
+node_modules/
+dist/
+
+# Security, Private DBs & Licensing
+C:/ProgramData/Diviora/license.db
+*.db
+*.key
+*.pem
+*.cert
+*.env
+.env.local
+
+# OS Metadata
+Thumbs.db
+Desktop.ini
+.DS_Store
