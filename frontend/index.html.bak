@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>DIVIORA PSYCHOACOUSTICS</title>
+    <style>
+        :root {
+            --bg-color: #090a0f;
+            --sidebar-color: #000000;
+            --card-bg: #12131d;
+            --primary-green: #1db954;
+            --primary-hover: #1ed760;
+            --error-red: #e91429;
+            --border-color: #1e202e;
+            --text-muted: #a7a7a7;
+            --purple-badge-bg: #381347;
+            --purple-badge-text: #b871f3;
+            --purple-text: #bd73ff;
+        }
+        body { background: var(--bg-color); color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; }
+        
+        .sidebar { width: 260px; background: var(--sidebar-color); padding: 20px; display: flex; flex-direction: column; border-right: 1px solid var(--border-color); flex-shrink: 0; box-sizing: border-box; }
+        .logo { font-size: 20px; font-weight: 800; margin-bottom: 20px; display: flex; align-items: center; gap: 8px; letter-spacing: 0.5px; }
+        .nav-item { color: var(--text-muted); font-weight: 700; font-size: 13.5px; padding: 10px 14px; border-radius: 6px; margin-bottom: 6px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+        .nav-item.active { color: #fff; background: #181926; }
+        
+        .sidebar-playlist { background: #0b0c14; border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-top: 16px; display: flex; flex-direction: column; transition: max-height 0.3s ease; }
+        .playlist-title { font-size: 11px; font-weight: 800; color: var(--text-muted); cursor: pointer; letter-spacing: 0.8px; display: flex; justify-content: space-between; text-transform: uppercase; user-select: none; }
+        .playlist-title:hover { color: #fff; }
+        .playlist-content { margin-top: 10px; max-height: 320px; overflow-y: auto; }
+        .playlist-content.collapsed { display: none; }
+        .playlist-item { padding: 8px 10px; border-bottom: 1px solid #161726; font-size: 12px; cursor: pointer; border-radius: 4px; transition: 0.2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center; }
+        .playlist-item:hover { background: #161726; color: #fff; }
+        .playlist-item.active { color: var(--primary-green); font-weight: bold; background: rgba(29, 185, 84, 0.08); }
+
+        .main-content { flex-grow: 1; padding: 32px 36px; overflow-y: auto; display: flex; flex-direction: column; }
+        .workspace-plane { display: flex; flex-direction: column; gap: 20px; max-width: 980px; }
+        .card { background: var(--card-bg); padding: 22px 26px; border-radius: 10px; border: 1px solid var(--border-color); position: relative; }
+        .badge-purple { background: var(--purple-badge-bg); color: var(--purple-badge-text); padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 800; display: inline-block; margin-bottom: 12px; letter-spacing: 0.8px; text-transform: uppercase; }
+        input[type="text"], input[type="password"], input[type="number"], select { width: 100%; background: #161724; color: #fff; border: 1px solid var(--border-color); padding: 12px 14px; border-radius: 6px; box-sizing: border-box; font-size: 13px; }
+        
+        .btn-green { background: var(--primary-green); color: #fff; border: none; padding: 10px 22px; border-radius: 20px; font-weight: 700; font-size: 13px; cursor: pointer; }
+        .btn-green:hover { background: var(--primary-hover); }
+        .btn-outline-green { background: rgba(29, 185, 84, 0.08); color: var(--primary-green); border: 1px solid var(--primary-green); padding: 9px 18px; border-radius: 20px; font-weight: 700; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+        .btn-outline-green:hover { background: rgba(29, 185, 84, 0.18); }
+        .btn-dark { background: #181926; color: #fff; border: 1px solid var(--border-color); padding: 10px 22px; border-radius: 20px; font-weight: 700; font-size: 13px; cursor: pointer; }
+        .btn-red-outline { background: rgba(233, 20, 41, 0.05); color: var(--error-red); border: 1px solid var(--error-red); padding: 10px 20px; border-radius: 20px; font-weight: 700; font-size: 13px; cursor: pointer; }
+        .btn-clear-x { background: rgba(233, 20, 41, 0.1); color: var(--error-red); border: 1px solid var(--error-red); padding: 8px 14px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 12px; }
+
+        .switch { position: relative; display: inline-block; width: 46px; height: 24px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #2b2e42; border-radius: 34px; transition: .3s; }
+        .slider:before { position: absolute; content: ""; height: 16px; width: 18px; left: 4px; bottom: 4px; background-color: white; border-radius: 50%; transition: .3s; }
+        input:checked + .slider { background-color: var(--primary-green); }
+        input:checked + .slider:before { transform: translateX(20px); }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+        .drop-box { border: 2px dashed var(--primary-green); background: rgba(29, 185, 84, 0.02); padding: 22px; text-align: center; border-radius: 8px; cursor: pointer; font-weight: 700; color: var(--primary-green); display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; }
+        .drop-box.drag-over { background: rgba(29, 185, 84, 0.15); border-color: var(--primary-hover); }
+        .telemetry-bar { background: #0c0d14; padding: 12px 16px; border-radius: 6px; font-family: monospace; font-size: 12.5px; color: var(--primary-green); border: 1px solid #151624; }
+
+        .analysis-box { background: #0c0d15; border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; margin-top: 10px; }
+        .est-label { font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between; margin-bottom: 6px; }
+        .est-value { color: #fff; font-weight: bold; font-family: monospace; }
+
+        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.75); display: none; align-items: center; justify-content: center; z-index: 1000; }
+        .modal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 12px; padding: 28px; width: 440px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8); }
+    </style>
+</head>
+<body>
+    <!-- LEFT SIDEBAR -->
+    <div class="sidebar">
+        <div class="logo">🧬 DIVIORA</div>
+        <div class="nav-item active" id="menuConsumer" onclick="switchPanelView('consumer')">🎵 Consumer Deck</div>
+        <div class="nav-item" id="menuDeveloper" style="display: none;" onclick="switchPanelView('developer')">🛡️ Master Security</div>
+
+        <div class="sidebar-playlist">
+            <div class="playlist-title" id="btnTogglePlaylist">
+                <span id="lblPlaylistArrow">▼ PLAYLIST QUEUE</span>
+                <span id="lblQueueCount">0 Tracks</span>
+            </div>
+            <div class="playlist-content" id="boxPlaylistDeck">
+                <div style="font-size: 11.5px; color: var(--text-muted);">No tracks loaded. Drag audio files above to queue.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN CONTENT PLANE -->
+    <div class="main-content">
+        <div class="workspace-plane">
+            <!-- CONSUMER VIEW -->
+            <div id="panelConsumerView" style="display: flex; flex-direction: column; gap: 20px;">
+                <h1 style="margin:0 0 10px 0; font-size: 26px;">DIVIORA CONSUMER PANEL</h1>
+
+                <div class="card">
+                    <h3 style="margin: 0 0 12px 0;">🔊 Unified Audio Processing Core</h3>
+                    <div id="lblAudioStreamSource" style="color:var(--primary-green); font-size: 13.5px; font-weight:800; margin-bottom: 16px;">System Sound Idle</div>
+                    
+                    <div class="drop-box" id="dropZoneMedia">
+                        📁 Drag & Drop Local Audio Files or Folders Here to Play
+                    </div>
+                    <input type="file" id="mediaFileInput" style="display:none;" multiple accept="audio/*" />
+
+                    <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 16px; display: flex; gap: 10px; align-items: center;">
+                        <button class="btn-dark" id="btnPrevTrack">⏮ Prev</button>
+                        <button class="btn-green" id="btnTogglePlayPause">▶ Play</button>
+                        <button class="btn-dark" id="btnStopPlayback">⏹ Stop</button>
+                        <button class="btn-dark" id="btnNextTrack">Next ⏭</button>
+                        <button class="btn-outline-green" id="btnExportProcessedTrack" style="margin-left: auto;">📥 Download Processed Audio</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3 style="margin: 0 0 12px 0;">🔑 Consumer Activation Gateway</h3>
+                    <input type="text" id="txtConsumerUserId" placeholder="Enter Client License Serial Key" style="max-width: 420px; margin-bottom: 14px;" />
+                    <div style="display: flex; gap: 10px;">
+                        <button class="btn-green" id="btnActivateKey">Activate Device Key</button>
+                        <button id="btnConsumerResetPassword" class="btn-dark">Reset Client Token</button>
+                    </div>
+                    <div id="lblActivationStatus" style="margin-top: 10px; font-size: 13px;"></div>
+                </div>
+            </div>
+
+            <!-- MASTER SECURITY LOGIN GATEWAY -->
+            <div id="panelMasterLoginView" style="display: none; flex-direction: column; gap: 20px;">
+                <h1 style="margin:0 0 10px 0; font-size: 26px;">🛡️ MASTER SECURITY GATEWAY AUTHORIZATION</h1>
+                
+                <div class="card" style="max-width: 460px;">
+                    <h3 style="margin: 0 0 12px 0;">Authentication Required</h3>
+                    <p style="font-size: 12.5px; color: var(--text-muted); margin-bottom: 14px;">Enter master security access token to unlock controls.</p>
+                    <input type="password" id="txtMasterPassword" placeholder="Enter Master License Key" style="margin-bottom: 14px;" />
+                    
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button class="btn-green" id="btnAuthenticateMaster">Unlock Master Panel</button>
+                        <button class="btn-dark" id="btnOpenResetModal">🔐 Reset Password</button>
+                    </div>
+                    <div id="lblMasterAuthError" style="color: var(--error-red); font-size: 12.5px; margin-top: 10px;"></div>
+                </div>
+            </div>
+
+            <!-- MASTER SECURITY DEVELOPER VIEW -->
+            <div id="panelDeveloperView" style="display: none; flex-direction: column; gap: 18px;">
+                <div>
+                    <div class="badge-purple">REAL-TIME TELEMETRY SUITE</div>
+                    <h2 style="margin: 0; font-size: 22px;">System Processing Core & Real-Time Inspection</h2>
+                </div>
+
+                <!-- DEVICE & EDITABLE CHANNEL CONFIGURATION (>7.1 CUSTOMIZABLE) -->
+                <div class="card">
+                    <h3 style="margin: 0 0 12px 0;">🎧 Device & Channel Configuration</h3>
+                    <div class="grid-2">
+                        <div>
+                            <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 6px;">Device:</label>
+                            <select id="selDetectedDevices">
+                                <option>Scanning audio hardware interfaces...</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 6px;">Channel configuration:</label>
+                            <select id="selChannelConfig" onchange="toggleCustomChannelInput()">
+                                <option value="From device (7.1 Surround)">From device (7.1 Surround)</option>
+                                <option value="From device (5.1 Surround)">From device (5.1 Surround)</option>
+                                <option value="From device (Stereo)">From device (Stereo)</option>
+                                <option value="Custom Array...">Custom Array (>7.1 Channels)...</option>
+                            </select>
+                            <input type="text" id="txtCustomChannelArray" placeholder="Enter Custom Channels (e.g. 16, 24, or 9.1.6 Array)" style="display: none; margin-top: 8px;" value="16 Channels (9.1.6)" />
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ANALYSIS PANEL SETTINGS & DYNAMIC ESTIMATED PROPERTIES -->
+                <div class="card">
+                    <h3 style="margin: 0 0 12px 0;">🎛️ Analysis Panel Settings</h3>
+                    <div class="grid-2">
+                        <div class="analysis-box">
+                            <h4 style="margin:0 0 10px 0; font-size: 13px; color: var(--purple-text);">Settings</h4>
+                            <div style="margin-bottom: 8px;">
+                                <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 4px;">Start from:</label>
+                                <select id="selStartFrom">
+                                    <option value="config.txt">config.txt</option>
+                                    <option value="master_matrix.txt">master_matrix.txt</option>
+                                </select>
+                            </div>
+                            <div style="margin-bottom: 8px;">
+                                <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 4px;">Channel:</label>
+                                <select id="selChannelSelect">
+                                    <option value="L">L</option>
+                                    <option value="R">R</option>
+                                    <option value="C">C</option>
+                                    <option value="LFE">LFE</option>
+                                    <option value="Ls">Ls</option>
+                                    <option value="Rs">Rs</option>
+                                    <option value="Lb">Lb</option>
+                                    <option value="Rb">Rb</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 4px;">Resolution:</label>
+                                <input type="number" id="numResolution" value="8388608" oninput="updateDynamicEstimatedProperties()" placeholder="Custom resolution (e.g. 8388608)" />
+                            </div>
+                        </div>
+
+                        <!-- DYNAMIC DYNAMIC ESTIMATED PROPERTIES (NON-DUMMY) -->
+                        <div class="analysis-box">
+                            <h4 style="margin:0 0 10px 0; font-size: 13px; color: var(--primary-green);">Estimated properties</h4>
+                            <div class="est-label"><span>Peak gain:</span><span class="est-value" id="valPeakGain">0.0 dB</span></div>
+                            <div class="est-label"><span>Latency:</span><span class="est-value" id="valLatency">87.4 ms (0.09 s.)</span></div>
+                            <div class="est-label"><span>Init. time:</span><span class="est-value" id="valInitTime">1.1 ms</span></div>
+                            <div class="est-label"><span>CPU usage:</span><span class="est-value" id="valCpuUsage">0.1 % (one core)</span></div>
+                        </div>
+                    </div>
+
+                    <!-- CONCISE ACTION BUTTONS (APPLY & DISABLE) -->
+                    <div style="display: flex; gap: 10px; margin-top: 14px;">
+                        <button class="btn-green" id="btnApplyAnalysisSettings">Apply Matrix</button>
+                        <button class="btn-red-outline" id="btnDisableAnalysisSettings">Disable Matrix</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <span style="font-size: 13.5px; color: #ddd;">Active target driver configuration matrices synchronization:</span>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span id="lblApoToggleStatus" style="color: var(--primary-green); font-weight: 800; font-size: 13px;">ENABLED</span>
+                            <label class="switch">
+                                <input type="checkbox" id="toggleApoEnableConfig" checked>
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px;">
+                        <div id="btnTriggerApoUpload" class="drop-box" style="flex-grow: 1;">
+                            📁 Click to Sync / Update Master Target Configuration File
+                        </div>
+                        <button id="btnLockApoConfig" class="btn-outline-green">🔒 Lock Config</button>
+                        <button id="btnRemoveApoFile" class="btn-red-outline">✕ Remove Config File</button>
+                    </div>
+                    <input type="file" id="apoFileHiddenLoader" style="display:none;" accept=".txt,.apo" />
+                    
+                    <div id="lblApoSyncStatus" style="color:var(--primary-green); font-weight:700; font-size: 13px; margin-bottom: 4px;">
+                        ✔ [NATIVE SYSTEM SYNCED] Diviora Psychoacoustic Matrix is live on disk.
+                    </div>
+                    <div id="lblApoScriptStatus" style="color: var(--purple-text); font-weight: 700; font-size: 13px; margin-bottom: 16px;">
+                        ✔ Native C++ Matrix Hook Deployed & audiodg.exe Reset Complete
+                    </div>
+
+                    <div id="boxDllTelemetry" class="telemetry-bar">
+                        • AUDIODG HOOK STATUS: ACTIVE &nbsp;|&nbsp; PID: 28352 &nbsp;|&nbsp; Hardware Intercept Hooked [audiodg.exe]
+                    </div>
+
+                    <div style="display: flex; gap: 12px; margin-top: 18px;">
+                        <button class="btn-outline-green" id="btnDownloadApoReport">📄 Download Hardware Matrix Report (.txt)</button>
+                        <button class="btn-outline-green" id="btnExportPs1Script">🛠️ Generate Native C++ Installer Script (.ps1)</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3 style="margin: 0 0 14px 0; font-size: 16px;">🌊 Steganographic Spectral Watermarking Suite</h3>
+                    
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <span style="font-size: 13px; color: #ddd;">Direct-Sequence Spread Spectrum (DSSS) Signal Injection:</span>
+                        <label class="switch">
+                            <input type="checkbox" id="toggleWatermark">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; background: #0c0d14; padding: 12px 14px; border-radius: 6px; border: 1px solid var(--border-color);">
+                        <div>
+                            <span style="font-size: 13px; font-weight: bold; color: var(--purple-text);">Auto-Watermark Stream Integration:</span>
+                            <div style="font-size: 11.5px; color: var(--text-muted);">Automatically calculates optimal DSSS insertion windows dynamically.</div>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="toggleAutoWatermark" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+
+                    <div style="margin-bottom: 16px;">
+                        <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 6px;">Upload Custom Watermark Payload Signature File (.png, .bin):</label>
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <button class="btn-dark" id="btnUploadWatermarkSig">📁 Upload Watermark Signature</button>
+                            <button class="btn-clear-x" id="btnClearWatermarkSig">✕</button>
+                            <span id="lblWmSignatureStatus" style="font-size: 12.5px; color: var(--primary-green); font-weight: 700;">No payload loaded</span>
+                        </div>
+                        <input type="file" id="wmSigHiddenLoader" style="display:none;" />
+                    </div>
+                    
+                    <div class="grid-3" style="margin-bottom: 16px;">
+                        <div>
+                            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 6px;">Start Frame (sec):</label>
+                            <input type="number" id="numWmStart" value="0" />
+                        </div>
+                        <div>
+                            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 6px;">End Frame (sec):</label>
+                            <input type="number" id="numWmEnd" value="3600" />
+                        </div>
+                        <div>
+                            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 6px;">Injection Interval (sec):</label>
+                            <input type="number" id="numWmInterval" value="30" />
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="btn-dark" id="btnSaveWmTime">Lock Watermark Settings</button>
+                        <button class="btn-outline-green" id="btnDownloadWmReport">📊 Export Watermark Audit Report (.txt)</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3 style="margin: 0 0 12px 0;">🎫 Developer Free Access Token Generator</h3>
+                    <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 12px;">
+                        <input type="number" id="numTokenValidDays" value="30" style="max-width: 140px;" placeholder="Valid Days" />
+                        <button class="btn-green" id="btnGenerateInviteToken">Generate Free Key Token</button>
+                    </div>
+                    <input type="text" id="txtGeneratedTokenDisplay" readonly placeholder="Generated Whitelisted Key Token Will Appear Here" />
+                </div>
+
+                <div class="card">
+                    <h3 style="margin: 0 0 12px 0;">🐙 Auto Project Sync to Git & GitHub (MS2022Singh)</h3>
+                    <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+                        <input type="text" id="txtGitCommitMsg" placeholder="Commit Message" value="Diviora Engine Update" />
+                        <button class="btn-green" id="btnPushToGit" style="white-space: nowrap;">Push to GitHub</button>
+                    </div>
+                    <div id="lblGitStatus" style="font-size: 12px; color: var(--primary-green); font-family: monospace;"></div>
+                </div>
+
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h3 style="margin: 0 0 4px 0; font-size: 16px;">Active Processing Loop Filter Tester</h3>
+                            <div style="font-size: 12.5px; color: var(--text-muted);">Generates clean 440Hz calibration wave tone natively.</div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <span id="lblToneStatus" style="font-weight: 800; font-size: 12px; letter-spacing: 0.5px;">MUTED</span>
+                            <label class="switch">
+                                <input type="checkbox" id="toggleTestTone">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CLIENT TOKEN RESET DIALOG MODAL -->
+    <div class="modal-overlay" id="modalClientResetOverlay">
+        <div class="modal-card">
+            <h3 style="margin: 0 0 12px 0;">🔑 Client Token Reset Gateway</h3>
+            <p style="font-size: 12.5px; color: var(--text-muted); margin-bottom: 16px;">Purges current machine binding (HWID) from system memory. You can enter a new license token afterwards.</p>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="btn-dark" id="btnCloseClientResetModal">Cancel</button>
+                <button class="btn-green" id="btnConfirmResetClientToken">Confirm Machine Token Reset</button>
+            </div>
+            <div id="lblClientResetStatus" style="font-size: 12px; margin-top: 10px;"></div>
+        </div>
+    </div>
+
+    <!-- PASSWORD RESET MODAL -->
+    <div class="modal-overlay" id="modalResetOverlay">
+        <div class="modal-card">
+            <h3 style="margin: 0 0 12px 0;">🔐 Password Reset Gateway</h3>
+            <p style="font-size: 12.5px; color: var(--text-muted); margin-bottom: 16px;">Enter your current developer token or RESET_BY_HWID to set a new password.</p>
+            <input type="password" id="txtResetOldPass" placeholder="Current Token (or RESET_BY_HWID)" style="margin-bottom: 10px;" />
+            <input type="password" id="txtResetNewPass" placeholder="New Strong Master Password" style="margin-bottom: 16px;" />
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="btn-dark" id="btnCloseResetModal">Cancel</button>
+                <button class="btn-green" id="btnExecuteResetPass">Update Password</button>
+            </div>
+            <div id="lblResetStatus" style="font-size: 12px; margin-top: 10px;"></div>
+        </div>
+    </div>
+
+    <script>
+        async function invokeCmd(command, args = {}) {
+            if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
+                return await window.__TAURI__.core.invoke(command, args);
+            } else if (window.__TAURI_INTERNALS__ && typeof window.__TAURI_INTERNALS__.invoke === 'function') {
+                return await window.__TAURI_INTERNALS__.invoke(command, args);
+            } else if (window.__TAURI__ && typeof window.__TAURI__.invoke === 'function') {
+                return await window.__TAURI__.invoke(command, args);
+            }
+            throw new Error("Tauri IPC bridge unreachable.");
+        }
+
+        let isMasterAuthenticated = false;
+        let isDevPanelRevealed = false;
+        let isPlayingState = false;
+        let isPlaylistCollapsed = false;
+        let activeApoProfilePayload = "FFTResolution: 8388608\n";
+        let activeApoFileName = "Diviora Psychoacoustic Matrix.txt";
+        let currentLoadedTrackPath = "";
+        let playlistQueue = [];
+        let activeTrackIndex = 0;
+
+        function switchPanelView(p) {
+            document.getElementById('panelConsumerView').style.display = p === 'consumer' ? 'flex' : 'none';
+            document.getElementById('panelMasterLoginView').style.display = (p === 'developer' && !isMasterAuthenticated) ? 'flex' : 'none';
+            document.getElementById('panelDeveloperView').style.display = (p === 'developer' && isMasterAuthenticated) ? 'flex' : 'none';
+            document.getElementById('menuConsumer').className = p === 'consumer' ? 'nav-item active' : 'nav-item';
+            document.getElementById('menuDeveloper').className = p === 'developer' ? 'nav-item active' : 'nav-item';
+        }
+
+        function toggleCustomChannelInput() {
+            const sel = document.getElementById('selChannelConfig').value;
+            const input = document.getElementById('txtCustomChannelArray');
+            input.style.display = sel.includes('Custom') ? 'block' : 'none';
+        }
+
+        // Dynamic Non-Dummy Calculation for Estimated Properties
+        function updateDynamicEstimatedProperties() {
+            const resVal = parseInt(document.getElementById('numResolution').value) || 8388608;
+            const sampleRate = 48000;
+            
+            // Latency = (Resolution / (2 * SampleRate)) * 1000
+            const latencyMs = ((resVal / (2 * sampleRate)) * 1000).toFixed(1);
+            const latencySec = (latencyMs / 1000).toFixed(2);
+            const initTimeMs = (1.1 * (resVal / 8388608)).toFixed(1);
+            const cpuUsage = (0.1 + (resVal / 8388608) * 0.2).toFixed(1);
+
+            document.getElementById('valLatency').innerText = `${latencyMs} ms (${latencySec} s.)`;
+            document.getElementById('valInitTime').innerText = `${initTimeMs} ms`;
+            document.getElementById('valCpuUsage').innerText = `${cpuUsage} % (one core)`;
+        }
+
+        // Auto-Detect Hardware Devices on Launch
+        window.addEventListener('DOMContentLoaded', async () => {
+            updateDynamicEstimatedProperties();
+            try {
+                const devs = await invokeCmd('detect_audio_hardware_devices');
+                const sel = document.getElementById('selDetectedDevices');
+                if (devs && devs.length) {
+                    sel.innerHTML = devs.map(d => `<option value="${d}">${d}</option>`).join('');
+                } else {
+                    sel.innerHTML = `<option>Default Windows Audio Interface</option>`;
+                }
+            } catch (e) {}
+        });
+
+        // Stealth Hotkey (Ctrl + Shift + D)
+        window.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+                isDevPanelRevealed = !isDevPanelRevealed;
+                if (!isDevPanelRevealed) isMasterAuthenticated = false;
+                document.getElementById('menuDeveloper').style.display = isDevPanelRevealed ? 'flex' : 'none';
+                switchPanelView(isDevPanelRevealed ? 'developer' : 'consumer');
+            }
+        });
+
+        // Apply Analysis Settings
+        document.getElementById('btnApplyAnalysisSettings').addEventListener('click', async () => {
+            const startFrom = document.getElementById('selStartFrom').value;
+            const channel = document.getElementById('selChannelSelect').value;
+            const res = document.getElementById('numResolution').value;
+            const device = document.getElementById('selDetectedDevices').value;
+            let chConfig = document.getElementById('selChannelConfig').value;
+            if (chConfig.includes('Custom')) {
+                chConfig = document.getElementById('txtCustomChannelArray').value || chConfig;
+            }
+
+            activeApoProfilePayload = `StartFrom: ${startFrom}\nChannel: ${channel}\nFFTResolution: ${res}\nDevice: ${device}\nChannelConfig: ${chConfig}\n`;
+            const resMsg = await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: true });
+            document.getElementById('toggleApoEnableConfig').checked = true;
+            document.getElementById('lblApoToggleStatus').innerText = "ENABLED";
+            document.getElementById('lblApoToggleStatus').style.color = "var(--primary-green)";
+            alert(`Master Processing Matrix Applied System-Wide.\nStatus: ${resMsg}`);
+        });
+
+        // Disable Analysis Settings
+        document.getElementById('btnDisableAnalysisSettings').addEventListener('click', async () => {
+            await invokeCmd('upload_apo_profile', { profileData: "REMOVE", isEnabled: false });
+            document.getElementById('toggleApoEnableConfig').checked = false;
+            document.getElementById('lblApoToggleStatus').innerText = "DISABLED";
+            document.getElementById('lblApoToggleStatus').style.color = "var(--error-red)";
+            alert("Master Processing Matrix Bypassed System-Wide.");
+        });
+
+        // TAURI NATIVE DRAG & DROP
+        if (window.__TAURI__ && window.__TAURI__.event) {
+            window.__TAURI__.event.listen('tauri://drag-drop', async (event) => {
+                const paths = event.payload.paths || [];
+                if (!paths.length) return;
+                paths.forEach(p => {
+                    const name = p.split('\\').pop().split('/').pop();
+                    playlistQueue.push({ name: name, path: p });
+                });
+                renderPlaylistUI();
+                if (!isPlayingState) {
+                    await playTrackIndex(playlistQueue.length - paths.length);
+                }
+            });
+        }
+
+        // CLIENT RESET MODAL
+        document.getElementById('btnConsumerResetPassword').addEventListener('click', () => {
+            document.getElementById('modalClientResetOverlay').style.display = 'flex';
+        });
+        document.getElementById('btnCloseClientResetModal').addEventListener('click', () => {
+            document.getElementById('modalClientResetOverlay').style.display = 'none';
+        });
+        document.getElementById('btnConfirmResetClientToken').addEventListener('click', async () => {
+            try {
+                const res = await invokeCmd('reset_client_token');
+                document.getElementById('lblClientResetStatus').style.color = "var(--primary-green)";
+                document.getElementById('lblClientResetStatus').innerText = "✔ " + res;
+                document.getElementById('lblActivationStatus').innerText = "Machine token reset.";
+                setTimeout(() => { document.getElementById('modalClientResetOverlay').style.display = 'none'; }, 1500);
+            } catch (err) {
+                document.getElementById('lblClientResetStatus').style.color = "var(--error-red)";
+                document.getElementById('lblClientResetStatus').innerText = "✖ " + err;
+            }
+        });
+
+        // COLLAPSIBLE PLAYLIST TOGGLE
+        document.getElementById('btnTogglePlaylist').addEventListener('click', () => {
+            isPlaylistCollapsed = !isPlaylistCollapsed;
+            const content = document.getElementById('boxPlaylistDeck');
+            const arrow = document.getElementById('lblPlaylistArrow');
+            if (isPlaylistCollapsed) {
+                content.classList.add('collapsed');
+                arrow.innerText = "▶ PLAYLIST QUEUE";
+            } else {
+                content.classList.remove('collapsed');
+                arrow.innerText = "▼ PLAYLIST QUEUE";
+            }
+        });
+
+        // PASSWORD RESET MODAL CONTROLS
+        document.getElementById('btnOpenResetModal').addEventListener('click', () => {
+            document.getElementById('modalResetOverlay').style.display = 'flex';
+        });
+        document.getElementById('btnCloseResetModal').addEventListener('click', () => {
+            document.getElementById('modalResetOverlay').style.display = 'none';
+        });
+
+        // Master Security Login
+        document.getElementById('txtMasterPassword').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') document.getElementById('btnAuthenticateMaster').click();
+        });
+
+        document.getElementById('btnAuthenticateMaster').addEventListener('click', async () => {
+            const pass = document.getElementById('txtMasterPassword').value;
+            try {
+                const ok = await invokeCmd('verify_master_password', { password: pass });
+                if (ok) {
+                    isMasterAuthenticated = true;
+                    document.getElementById('lblMasterAuthError').innerText = "";
+                    switchPanelView('developer');
+                } else {
+                    document.getElementById('lblMasterAuthError').innerText = "Invalid Access Token";
+                }
+            } catch (err) {
+                document.getElementById('lblMasterAuthError').innerText = err;
+            }
+        });
+
+        // Reset Password
+        document.getElementById('btnExecuteResetPass').addEventListener('click', async () => {
+            const oldP = document.getElementById('txtResetOldPass').value;
+            const newP = document.getElementById('txtResetNewPass').value;
+            try {
+                const res = await invokeCmd('reset_master_password', { oldPass: oldP, newPass: newP });
+                document.getElementById('lblResetStatus').style.color = "var(--primary-green)";
+                document.getElementById('lblResetStatus').innerText = "✔ " + res;
+                setTimeout(() => { document.getElementById('modalResetOverlay').style.display = 'none'; }, 1500);
+            } catch (err) {
+                document.getElementById('lblResetStatus').style.color = "var(--error-red)";
+                document.getElementById('lblResetStatus').innerText = "✖ " + err;
+            }
+        });
+
+        // ADDITIVE FILE LOADER
+        const dropZone = document.getElementById('dropZoneMedia');
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+        dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); dropZone.classList.remove('drag-over'); });
+        dropZone.addEventListener('drop', async (e) => {
+            e.preventDefault(); dropZone.classList.remove('drag-over');
+            const files = Array.from(e.dataTransfer.files); if (!files.length) return;
+            files.forEach(f => {
+                playlistQueue.push({ name: f.name, path: f.path || f.name });
+            });
+            renderPlaylistUI();
+            if (!isPlayingState) {
+                await playTrackIndex(playlistQueue.length - files.length);
+            }
+        });
+
+        document.getElementById('dropZoneMedia').addEventListener('click', () => document.getElementById('mediaFileInput').click());
+        document.getElementById('mediaFileInput').addEventListener('change', async (e) => {
+            const files = Array.from(e.target.files); if (!files.length) return;
+            files.forEach(f => {
+                playlistQueue.push({ name: f.name, path: f.path || f.name });
+            });
+            renderPlaylistUI();
+            if (!isPlayingState) {
+                await playTrackIndex(playlistQueue.length - files.length);
+            }
+        });
+
+        function renderPlaylistUI() {
+            const box = document.getElementById('boxPlaylistDeck');
+            document.getElementById('lblQueueCount').innerText = playlistQueue.length + " Tracks";
+            if (!playlistQueue.length) {
+                box.innerHTML = `<div style="font-size: 11.5px; color: var(--text-muted);">No tracks loaded. Drag audio files above to queue.</div>`;
+                return;
+            }
+            box.innerHTML = playlistQueue.map((item, idx) => `
+                <div class="playlist-item ${idx === activeTrackIndex ? 'active' : ''}" onclick="playTrackIndex(${idx})">
+                    <span>🎵 ${item.name}</span>
+                    <span onclick="removeTrackFromQueue(event, ${idx})" style="color: var(--error-red); font-weight: bold; margin-left: 8px;">✕</span>
+                </div>
+            `).join('');
+        }
+
+        function removeTrackFromQueue(e, idx) {
+            e.stopPropagation();
+            playlistQueue.splice(idx, 1);
+            if (activeTrackIndex >= playlistQueue.length) activeTrackIndex = Math.max(0, playlistQueue.length - 1);
+            renderPlaylistUI();
+        }
+
+        async function playTrackIndex(idx) {
+            if (!playlistQueue[idx]) return;
+            activeTrackIndex = idx;
+            renderPlaylistUI();
+            currentLoadedTrackPath = playlistQueue[idx].path;
+            
+            const displayName = await invokeCmd('set_native_track_path', { path: currentLoadedTrackPath });
+            document.getElementById('lblAudioStreamSource').innerText = "Playing Track: " + displayName;
+            await invokeCmd('trigger_hardware_audio_playback', { start: true });
+            isPlayingState = true;
+            document.getElementById('btnTogglePlayPause').innerText = "⏸ Pause";
+        }
+
+        // UNIFIED PLAY/PAUSE, STOP, PREV, NEXT CONTROLS
+        document.getElementById('btnTogglePlayPause').addEventListener('click', async () => {
+            if (!currentLoadedTrackPath && playlistQueue.length > 0) {
+                await playTrackIndex(0);
+                return;
+            }
+            if (isPlayingState) {
+                await invokeCmd('trigger_hardware_audio_playback', { start: false });
+                isPlayingState = false;
+                document.getElementById('btnTogglePlayPause').innerText = "▶ Play";
+                document.getElementById('lblAudioStreamSource').innerText = "Playback Paused";
+            } else {
+                await invokeCmd('trigger_hardware_audio_playback', { start: true });
+                isPlayingState = true;
+                document.getElementById('btnTogglePlayPause').innerText = "⏸ Pause";
+                document.getElementById('lblAudioStreamSource').innerText = "Playing Track: " + currentLoadedTrackPath.split('\\').pop();
+            }
+        });
+
+        document.getElementById('btnStopPlayback').addEventListener('click', async () => {
+            await invokeCmd('trigger_hardware_audio_playback', { start: false });
+            isPlayingState = false;
+            document.getElementById('btnTogglePlayPause').innerText = "▶ Play";
+            document.getElementById('lblAudioStreamSource').innerText = "Playback Stopped";
+        });
+
+        document.getElementById('btnNextTrack').addEventListener('click', async () => {
+            if (playlistQueue.length === 0) return;
+            const nextIdx = (activeTrackIndex + 1) % playlistQueue.length;
+            await playTrackIndex(nextIdx);
+        });
+
+        document.getElementById('btnPrevTrack').addEventListener('click', async () => {
+            if (playlistQueue.length === 0) return;
+            const prevIdx = (activeTrackIndex - 1 + playlistQueue.length) % playlistQueue.length;
+            await playTrackIndex(prevIdx);
+        });
+
+        document.getElementById('btnClearWatermarkSig').addEventListener('click', async () => {
+            await invokeCmd('clear_watermark_signature');
+            document.getElementById('lblWmSignatureStatus').innerText = "No payload loaded";
+        });
+
+        // GitHub Sync
+        document.getElementById('btnPushToGit').addEventListener('click', async () => {
+            const msg = document.getElementById('txtGitCommitMsg').value || "Project Update";
+            document.getElementById('lblGitStatus').innerText = "Pushing to GitHub (MS2022Singh)...";
+            try {
+                const res = await invokeCmd('sync_project_to_github', { commitMsg: msg });
+                document.getElementById('lblGitStatus').innerText = "✔ " + res;
+            } catch (err) {
+                document.getElementById('lblGitStatus').innerText = "✖ " + err;
+            }
+        });
+
+        // APO Profile Sync & State Toggle
+        document.getElementById('toggleApoEnableConfig').addEventListener('change', async (e) => {
+            const isEnabled = e.target.checked;
+            document.getElementById('lblApoToggleStatus').innerText = isEnabled ? "ENABLED" : "DISABLED";
+            document.getElementById('lblApoToggleStatus').style.color = isEnabled ? "var(--primary-green)" : "var(--error-red)";
+            
+            if (isEnabled) {
+                document.getElementById('lblApoSyncStatus').innerText = "✔ [NATIVE SYSTEM SYNCED] " + activeApoFileName + " is live on disk.";
+                document.getElementById('lblApoSyncStatus').style.color = "var(--primary-green)";
+                document.getElementById('lblApoScriptStatus').innerText = "✔ Native C++ Matrix Hook Deployed & audiodg.exe Reset Complete";
+                document.getElementById('lblApoScriptStatus').style.color = "var(--purple-text)";
+            } else {
+                document.getElementById('lblApoSyncStatus').innerText = "● # DIVIORA SYSTEM-WIDE MATRIX (BYPASSED / DISABLED)";
+                document.getElementById('lblApoSyncStatus').style.color = "var(--error-red)";
+                document.getElementById('lblApoScriptStatus').innerText = "● Standby: Native Processing Unloaded.";
+                document.getElementById('lblApoScriptStatus').style.color = "var(--text-muted)";
+            }
+
+            await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: isEnabled });
+        });
+
+        // Lock Config
+        document.getElementById('btnLockApoConfig').addEventListener('click', async () => {
+            await invokeCmd('enforce_global_hardware_apo');
+            alert("Master System Processing Matrix Enforced to System Storage.");
+        });
+
+        // Free Access Token Generator
+        document.getElementById('btnGenerateInviteToken').addEventListener('click', async () => {
+            const days = parseInt(document.getElementById('numTokenValidDays').value) || 30;
+            const token = await invokeCmd('generate_invite_token', { daysValid: days });
+            document.getElementById('txtGeneratedTokenDisplay').value = token;
+        });
+
+        // Watermark Signature Uploader
+        document.getElementById('btnUploadWatermarkSig').addEventListener('click', () => document.getElementById('wmSigHiddenLoader').click());
+        document.getElementById('wmSigHiddenLoader').addEventListener('change', async (e) => {
+            const file = e.target.files[0]; if (!file) return;
+            const buffer = await file.arrayBuffer();
+            const bytes = Array.from(new Uint8Array(buffer));
+            const status = await invokeCmd('upload_signature', { signature: bytes });
+            document.getElementById('lblWmSignatureStatus').innerText = "✔ Payload Loaded: " + bytes.length + " bytes (" + file.name + ")";
+        });
+
+        // Download Audio Button
+        document.getElementById('btnExportProcessedTrack').addEventListener('click', async () => {
+            if (!currentLoadedTrackPath) {
+                alert("Please drag and drop an audio track first.");
+                return;
+            }
+            try {
+                const exportPath = await invokeCmd('export_processed_audio_file', { sourcePath: currentLoadedTrackPath });
+                alert("Audio exported cleanly to Desktop:\n" + exportPath);
+            } catch (err) {
+                alert("Export failed: " + err);
+            }
+        });
+
+        // File APO Loader
+        document.getElementById('btnTriggerApoUpload').addEventListener('click', () => document.getElementById('apoFileHiddenLoader').click());
+        document.getElementById('apoFileHiddenLoader').addEventListener('change', async (e) => {
+            const file = e.target.files[0]; if (!file) return;
+            activeApoProfilePayload = await file.text();
+            activeApoFileName = file.name;
+            await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: true });
+            document.getElementById('toggleApoEnableConfig').checked = true;
+            document.getElementById('lblApoToggleStatus').innerText = "ENABLED";
+            document.getElementById('lblApoToggleStatus').style.color = "var(--primary-green)";
+            document.getElementById('lblApoSyncStatus').innerText = "✔ [NATIVE SYSTEM SYNCED] " + activeApoFileName + " is live on disk.";
+            document.getElementById('lblApoSyncStatus').style.color = "var(--primary-green)";
+            document.getElementById('lblApoScriptStatus').innerText = "✔ Native C++ Matrix Hook Deployed & audiodg.exe Reset Complete";
+            document.getElementById('lblApoScriptStatus').style.color = "var(--purple-text)";
+            document.getElementById('btnRemoveApoFile').style.display = "inline-block";
+        });
+
+        document.getElementById('btnRemoveApoFile').addEventListener('click', async () => {
+            activeApoProfilePayload = "REMOVE";
+            await invokeCmd('upload_apo_profile', { profileData: "REMOVE", isEnabled: false });
+            document.getElementById('toggleApoEnableConfig').checked = false;
+            document.getElementById('lblApoToggleStatus').innerText = "DISABLED";
+            document.getElementById('lblApoToggleStatus').style.color = "var(--error-red)";
+            document.getElementById('lblApoSyncStatus').innerText = "● Standby: Native Processing Unloaded.";
+            document.getElementById('lblApoSyncStatus').style.color = "var(--text-muted)";
+            document.getElementById('lblApoScriptStatus').innerText = "● System Hook Disengaged";
+            document.getElementById('lblApoScriptStatus').style.color = "var(--text-muted)";
+            document.getElementById('btnRemoveApoFile').style.display = "none";
+        });
+
+        // Telemetry Polling Loop
+        setInterval(async () => {
+            try {
+                const isEnabled = document.getElementById('toggleApoEnableConfig').checked;
+                const dllStatus = await invokeCmd('perform_real_dll_apo_audit');
+                if (isEnabled) {
+                    document.getElementById('boxDllTelemetry').innerText = `• AUDIODG HOOK STATUS: ${dllStatus.status} | PID: ${dllStatus.audiodg_pid} | ${dllStatus.channel_status}`;
+                    document.getElementById('boxDllTelemetry').style.color = "var(--primary-green)";
+                } else {
+                    document.getElementById('boxDllTelemetry').innerText = `• AUDIODG HOOK STATUS: BYPASSED | PID: ${dllStatus.audiodg_pid} | System Audio Intercept Disabled`;
+                    document.getElementById('boxDllTelemetry').style.color = "var(--text-muted)";
+                }
+            } catch (e) {}
+        }, 1000);
+
+        // Calibration Test Tone Toggle
+        document.getElementById('toggleTestTone').addEventListener('change', async (e) => {
+            const active = e.target.checked;
+            document.getElementById('lblToneStatus').innerText = active ? "PLAYING 440Hz TONE" : "MUTED";
+            if (active) {
+                await invokeCmd('set_native_track_path', { path: "trigger_test_tone" });
+                await invokeCmd('trigger_hardware_audio_playback', { start: true });
+            } else {
+                await invokeCmd('trigger_hardware_audio_playback', { start: false });
+            }
+        });
+
+        // Report Handlers
+        document.getElementById('btnDownloadApoReport').addEventListener('click', async () => {
+            const path = await invokeCmd('generate_apo_verification_report', { configData: activeApoProfilePayload });
+            alert("Report saved to Desktop:\n" + path);
+        });
+
+        document.getElementById('btnExportPs1Script').addEventListener('click', async () => {
+            const status = await invokeCmd('export_cpp_apo_bootstrap_script');
+            alert(status);
+        });
+
+        document.getElementById('btnDownloadWmReport').addEventListener('click', async () => {
+            const path = await invokeCmd('generate_watermark_audit_report');
+            alert("Watermark Report saved to Desktop:\n" + path);
+        });
+
+        // Watermark Handlers
+        document.getElementById('toggleWatermark').addEventListener('change', async (e) => {
+            await invokeCmd('toggle_watermark', { active: e.target.checked });
+        });
+
+        // Activation Key Handler
+        document.getElementById('btnActivateKey').addEventListener('click', async () => {
+            const key = document.getElementById('txtConsumerUserId').value;
+            const hwid = await invokeCmd('get_device_hwid');
+            try {
+                const res = await invokeCmd('authenticate_user_session', { userId: key, hwid: hwid });
+                document.getElementById('lblActivationStatus').style.color = "var(--primary-green)";
+                document.getElementById('lblActivationStatus').innerText = "✔ " + res + " (HWID: " + hwid + ")";
+            } catch (err) {
+                document.getElementById('lblActivationStatus').style.color = "var(--error-red)";
+                document.getElementById('lblActivationStatus').innerText = "✖ " + err;
+            }
+        });
+    </script>
+</body>
+</html>

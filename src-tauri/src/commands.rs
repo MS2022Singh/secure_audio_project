@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+﻿use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 use std::fs;
 use std::process::Command;
@@ -135,13 +135,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     "#;
 
     let _ = Command::new("powershell").args(["-Command", ps_system_script]).output();
-    "✔ Native System Hook Deployed & audiodg.exe Reset Complete".to_string()
+    "âœ” Native System Hook Deployed & audiodg.exe Reset Complete".to_string()
 }
 
 #[tauri::command]
 pub fn upload_apo_profile(profile_data: String, is_enabled: bool, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
     let mgr = manager.inner();
-    let mut mutex_lock = mgr.lock().unwrap();
+    let mutex_lock = mgr.lock().unwrap();
     let target_paths = get_diviora_apo_config_paths();
 
     mutex_lock.stop();
@@ -311,7 +311,7 @@ pub fn export_processed_audio_file(source_path: String, manager: State<'_, Arc<M
 }
 
 #[tauri::command] pub fn export_cpp_apo_bootstrap_script() -> Result<String, String> { Ok(execute_full_native_apo_system_hook()) }
-#[tauri::command] pub fn set_watermark_time_frame(start_sec: u32, end_sec: u32, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> { let mgr = manager.inner(); let mutex_lock = mgr.lock().unwrap(); let mut range_guard = mutex_lock.watermark_time_range.lock().unwrap(); *range_guard = (start_sec, end_sec); Ok(format!("Watermark window locked: {}s to {}s", start_sec, end_sec)) }
+#[tauri::command] pub fn set_watermark_time_frame(start_sec: u32, end_sec: u32, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> { let mgr = manager.inner(); let mutex_lock = mgr.lock().unwrap(); let mut range_guard = mutex_lock.watermark_time_range.lock().unwrap(); *range_guard = (start_sec as f64, end_sec as f64); Ok(format!("Watermark window locked: {}s to {}s", start_sec, end_sec)) }
 #[tauri::command] pub fn clear_watermark_signature(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> { let mgr = manager.inner(); let mutex_lock = mgr.lock().unwrap(); let mut sig_guard = mutex_lock.watermark_signature.lock().unwrap(); let mut active_guard = mutex_lock.watermark_active.lock().unwrap(); sig_guard.clear(); *active_guard = false; Ok("Signature cleared.".to_string()) }
 #[tauri::command] pub fn ingest_dropped_paths(paths: Vec<String>, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<serde_json::Value, String> { let mgr = manager.inner(); let mutex_lock = mgr.lock().unwrap(); let mut flat_files = Vec::new(); for path_str in paths { flat_files.extend(FileSystemScanner::flatten_directory(&PathBuf::from(&path_str))); } let count = flat_files.len(); if !flat_files.is_empty() { if let Ok(mut track_guard) = mutex_lock.current_track_path.lock() { *track_guard = flat_files[0].to_string_lossy().to_string(); } } Ok(serde_json::json!({ "status": "success", "items_ingested": count })) }
 #[tauri::command] pub fn generate_apo_verification_report(config_data: String) -> Result<String, String> { let mut hasher = Sha256::new(); hasher.update(config_data.as_bytes()); let hash_result = format!("{:x}", hasher.finalize()); let desktop_path = dirs::desktop_dir().unwrap_or_else(|| PathBuf::from("C:\\")).join("DIVIORA_System_Audio_Matrix_Report.txt"); fs::write(&desktop_path, format!("DIVIORA REPORT\nHASH: {}\nPAYLOAD:\n{}", hash_result, config_data)).map_err(|e| e.to_string())?; Ok(desktop_path.to_string_lossy().to_string()) }
@@ -331,3 +331,4 @@ pub fn export_processed_audio_file(source_path: String, manager: State<'_, Arc<M
     let res = *mutex_lock.watermark_active.lock().unwrap();
     Ok(res) 
 }
+

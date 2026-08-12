@@ -1,46 +1,52 @@
-﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+﻿use std::sync::{Arc, Mutex};
+use tauri::Manager;
 
-mod playback;
-mod drop;
-mod security;
-mod commands;
+pub mod playback;
+pub mod drop;
+pub mod security;
+pub mod commands;
 
-use std::sync::{Arc, Mutex};
-use playback::manager::PlaybackManager;
-use commands::*;
+pub use playback::manager::PlaybackManager;
 
 fn main() {
-    let manager = Arc::new(Mutex::new(PlaybackManager::new()));
+    // PlaybackManager::new() returns a Result, so we unwrap it
+    let playback_instance = PlaybackManager::new().expect("Failed to initialize PlaybackManager engine");
+    let manager = Arc::new(Mutex::new(playback_instance));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(manager)
+        .manage(manager.clone())
+        .setup(move |app| {
+            app.manage(manager.clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            upload_apo_profile,
-            export_cpp_apo_bootstrap_script,
-            set_watermark_time_frame,
-            clear_watermark_signature,
-            set_native_track_path,
-            detect_audio_hardware_devices,
-            trigger_hardware_audio_playback,
-            ingest_dropped_paths,
-            generate_apo_verification_report,
-            generate_watermark_audit_report,
-            perform_real_dll_apo_audit,
-            perform_real_watermark_fft_audit,
-            check_playback_queue_status,
-            get_live_amplitude_metrics,
-            enforce_global_hardware_apo,
-            get_device_hwid,
-            authenticate_user_session,
-            reset_client_token,
-            upload_signature,
-            toggle_watermark,
-            verify_watermark_presence,
-            verify_master_password,
-            reset_master_password,
-            generate_invite_token,
-            sync_project_to_github,
-            export_processed_audio_file
+            commands::upload_apo_profile,
+            commands::set_native_track_path,
+            commands::trigger_hardware_audio_playback,
+            commands::detect_audio_hardware_devices,
+            commands::reset_client_token,
+            commands::verify_master_password,
+            commands::reset_master_password,
+            commands::generate_invite_token,
+            commands::sync_project_to_github,
+            commands::export_processed_audio_file,
+            commands::export_cpp_apo_bootstrap_script,
+            commands::set_watermark_time_frame,
+            commands::clear_watermark_signature,
+            commands::ingest_dropped_paths,
+            commands::generate_apo_verification_report,
+            commands::generate_watermark_audit_report,
+            commands::perform_real_dll_apo_audit,
+            commands::perform_real_watermark_fft_audit,
+            commands::check_playback_queue_status,
+            commands::get_live_amplitude_metrics,
+            commands::enforce_global_hardware_apo,
+            commands::get_device_hwid,
+            commands::authenticate_user_session,
+            commands::upload_signature,
+            commands::toggle_watermark,
+            commands::verify_watermark_presence
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

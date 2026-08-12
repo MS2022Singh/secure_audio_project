@@ -1,24 +1,24 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Diviora Psychoacoustics",
-  "version": "0.1.0",
-  "identifier": "com.diviora.app",
-  "build": {
-    "frontendDist": "../frontend"
-  },
-  "app": {
-    "withGlobalTauri": true,
-    "windows": [
-      {
-        "title": "DIVIORA PSYCHOACOUSTICS",
-        "width": 1280,
-        "height": 800,
-        "resizable": true,
-        "dragDropEnabled": true
-      }
-    ],
-    "security": {
-      "csp": null
-    }
-  }
+    "$schema":  "https://schema.tauri.app/config/2",
+    "productName":  "Diviora Psychoacoustics",
+    "version":  "0.1.0",
+    "identifier":  "com.diviora.psychoacoustics",
+    "build":  {
+                  "frontendDist":  "../frontend"
+              },
+    "app":  {
+                "withGlobalTauri":  true,
+                "windows":  [
+                                {
+                                    "title":  "DIVIORA PSYCHOACOUSTICS",
+                                    "width":  1280,
+                                    "height":  800,
+                                    "resizable":  true,
+                                    "dragDropEnabled":  true
+                                }
+                            ],
+                "security":  {
+                                 "csp":  null
+                             }
+            }
 }
