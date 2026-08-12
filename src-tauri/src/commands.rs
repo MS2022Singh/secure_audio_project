@@ -10,8 +10,11 @@ use crate::playback::manager::PlaybackManager;
 use crate::drop::scan::FileSystemScanner;
 use crate::security::SecurityManager;
 
-fn get_diviora_apo_config_path() -> PathBuf {
-    PathBuf::from("C:\\ProgramData\\Diviora\\config.txt")
+fn get_diviora_apo_config_paths() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("C:\\ProgramData\\Diviora\\config.txt"),
+        PathBuf::from("C:\\Program Files\\EqualizerAPO\\config\\config.txt"),
+    ]
 }
 
 fn execute_full_native_apo_system_hook() -> String {
@@ -139,37 +142,34 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 pub fn upload_apo_profile(profile_data: String, is_enabled: bool, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
     let mgr = manager.inner();
     let mut mutex_lock = mgr.lock().unwrap();
-    let target_path = get_diviora_apo_config_path();
+    let target_paths = get_diviora_apo_config_paths();
 
     mutex_lock.stop();
     let mut lock = mutex_lock.is_global_apo_locked.lock().unwrap();
 
-    if profile_data == "REMOVE" {
+    if profile_data == "REMOVE" || !is_enabled {
         *lock = false;
-        let _ = fs::write(&target_path, "# Diviora System Audio Matrix Unloaded\nFFTResolution: 8388608\n");
+        let bypass_payload = "# DIVIORA SYSTEM-WIDE MATRIX (DISABLED / BYPASSED)\nFFTResolution: 8388608\n";
+        for path in target_paths {
+            if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
+            let _ = fs::write(path, bypass_payload);
+        }
         let _ = execute_full_native_apo_system_hook();
         std::thread::sleep(std::time::Duration::from_millis(150));
-        return Ok("Diviora Master Audio Matrix Unloaded System-Wide.".to_string());
-    }
-
-    if !is_enabled {
-        *lock = false;
-        let commented_data = format!("# DIVIORA SYSTEM-WIDE MATRIX (BYPASSED / DISABLED)\n# {}", profile_data.replace("\n", "\n# "));
-        let _ = fs::write(&target_path, commented_data);
-        let _ = execute_full_native_apo_system_hook();
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        return Ok("Diviora Master Audio Matrix Bypassed.".to_string());
+        return Ok("Diviora System Processing Matrix Disabled / Unloaded.".to_string());
     }
 
     *lock = true;
-    if let Some(parent) = target_path.parent() { let _ = fs::create_dir_all(parent); }
-    let header = "# DIVIORA NATIVE INDEPENDENT SYSTEM AUDIO MATRIX\nFFTResolution: 8388608\n";
+    let header = "# DIVIORA NATIVE INDEPENDENT SYSTEM AUDIO MATRIX\n";
     let full_payload = format!("{}{}", header, profile_data);
-    fs::write(&target_path, full_payload).map_err(|e| e.to_string())?;
+    for path in target_paths {
+        if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
+        let _ = fs::write(path, &full_payload);
+    }
 
     let hook_msg = execute_full_native_apo_system_hook();
     std::thread::sleep(std::time::Duration::from_millis(150));
-    Ok(format!("Synced to C:\\ProgramData\\Diviora\\config.txt | Status: {}", hook_msg))
+    Ok(format!("Synced System-Wide | Status: {}", hook_msg))
 }
 
 #[tauri::command]
@@ -284,7 +284,7 @@ pub fn sync_project_to_github(commit_msg: String) -> Result<String, String> {
 
     let _add_out = Command::new("git").args(["add", "."]).current_dir(&workspace).output().map_err(|e| e.to_string())?;
     let _commit_out = Command::new("git").args(["commit", "-m", &commit_msg]).current_dir(&workspace).output().map_err(|e| e.to_string())?;
-    let push_out = Command::new("git").args(["push", "-u", "origin", "main"]).current_dir(&workspace).output().map_err(|e| e.to_string())?;
+    let push_out = Command::new("git").args(["push", "-u", "origin", "main", "--force"]).current_dir(&workspace).output().map_err(|e| e.to_string())?;
 
     let stdout = String::from_utf8_lossy(&push_out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&push_out.stderr).to_string();

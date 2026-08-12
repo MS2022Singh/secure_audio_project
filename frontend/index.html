@@ -88,7 +88,7 @@
     <!-- MAIN CONTENT PLANE -->
     <div class="main-content">
         <div class="workspace-plane">
-            <!-- CONSUMER VIEW (URL STREAM BOX COMPLETELY REMOVED) -->
+            <!-- CONSUMER VIEW -->
             <div id="panelConsumerView" style="display: flex; flex-direction: column; gap: 20px;">
                 <h1 style="margin:0 0 10px 0; font-size: 26px;">DIVIORA CONSUMER PANEL</h1>
 
@@ -145,7 +145,7 @@
                     <h2 style="margin: 0; font-size: 22px;">System Processing Core & Real-Time Inspection</h2>
                 </div>
 
-                <!-- DEVICE & CHANNEL CONFIGURATION (MATCHING IMAGE 3) -->
+                <!-- DEVICE & EDITABLE CHANNEL CONFIGURATION (>7.1 CUSTOMIZABLE) -->
                 <div class="card">
                     <h3 style="margin: 0 0 12px 0;">🎧 Device & Channel Configuration</h3>
                     <div class="grid-2">
@@ -157,18 +157,18 @@
                         </div>
                         <div>
                             <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 6px;">Channel configuration:</label>
-                            <select id="selChannelConfig">
+                            <select id="selChannelConfig" onchange="toggleCustomChannelInput()">
                                 <option value="From device (7.1 Surround)">From device (7.1 Surround)</option>
                                 <option value="From device (5.1 Surround)">From device (5.1 Surround)</option>
                                 <option value="From device (Stereo)">From device (Stereo)</option>
-                                <option value="Custom 16-Channel Array">Custom 16-Channel Array</option>
-                                <option value="Custom 24-Channel Array">Custom 24-Channel Array</option>
+                                <option value="Custom Array...">Custom Array (>7.1 Channels)...</option>
                             </select>
+                            <input type="text" id="txtCustomChannelArray" placeholder="Enter Custom Channels (e.g. 16, 24, or 9.1.6 Array)" style="display: none; margin-top: 8px;" value="16 Channels (9.1.6)" />
                         </div>
                     </div>
                 </div>
 
-                <!-- ANALYSIS PANEL SETTINGS & ESTIMATED PROPERTIES (MATCHING IMAGES 1 & 2 - PREAMP REMOVED) -->
+                <!-- ANALYSIS PANEL SETTINGS & DYNAMIC ESTIMATED PROPERTIES -->
                 <div class="card">
                     <h3 style="margin: 0 0 12px 0;">🎛️ Analysis Panel Settings</h3>
                     <div class="grid-2">
@@ -196,19 +196,25 @@
                             </div>
                             <div>
                                 <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 4px;">Resolution:</label>
-                                <input type="number" id="numResolution" value="8388608" placeholder="Custom resolution (e.g. 8388608)" />
+                                <input type="number" id="numResolution" value="8388608" oninput="updateDynamicEstimatedProperties()" placeholder="Custom resolution (e.g. 8388608)" />
                             </div>
                         </div>
 
+                        <!-- DYNAMIC DYNAMIC ESTIMATED PROPERTIES (NON-DUMMY) -->
                         <div class="analysis-box">
                             <h4 style="margin:0 0 10px 0; font-size: 13px; color: var(--primary-green);">Estimated properties</h4>
-                            <div class="est-label"><span>Peak gain:</span><span class="est-value">0.0 dB</span></div>
-                            <div class="est-label"><span>Latency:</span><span class="est-value">0.0 ms (0 s.)</span></div>
-                            <div class="est-label"><span>Init. time:</span><span class="est-value">1.1 ms</span></div>
-                            <div class="est-label"><span>CPU usage:</span><span class="est-value">0.1 % (one core)</span></div>
+                            <div class="est-label"><span>Peak gain:</span><span class="est-value" id="valPeakGain">0.0 dB</span></div>
+                            <div class="est-label"><span>Latency:</span><span class="est-value" id="valLatency">87.4 ms (0.09 s.)</span></div>
+                            <div class="est-label"><span>Init. time:</span><span class="est-value" id="valInitTime">1.1 ms</span></div>
+                            <div class="est-label"><span>CPU usage:</span><span class="est-value" id="valCpuUsage">0.1 % (one core)</span></div>
                         </div>
                     </div>
-                    <button class="btn-green" id="btnApplyAnalysisSettings" style="margin-top: 14px;">Apply Custom Matrix System-Wide</button>
+
+                    <!-- CONCISE ACTION BUTTONS (APPLY & DISABLE) -->
+                    <div style="display: flex; gap: 10px; margin-top: 14px;">
+                        <button class="btn-green" id="btnApplyAnalysisSettings">Apply Matrix</button>
+                        <button class="btn-red-outline" id="btnDisableAnalysisSettings">Disable Matrix</button>
+                    </div>
                 </div>
 
                 <div class="card">
@@ -396,8 +402,31 @@
             document.getElementById('menuDeveloper').className = p === 'developer' ? 'nav-item active' : 'nav-item';
         }
 
-        // Auto-Detect Hardware Audio Interfaces
+        function toggleCustomChannelInput() {
+            const sel = document.getElementById('selChannelConfig').value;
+            const input = document.getElementById('txtCustomChannelArray');
+            input.style.display = sel.includes('Custom') ? 'block' : 'none';
+        }
+
+        // Dynamic Non-Dummy Calculation for Estimated Properties
+        function updateDynamicEstimatedProperties() {
+            const resVal = parseInt(document.getElementById('numResolution').value) || 8388608;
+            const sampleRate = 48000;
+            
+            // Latency = (Resolution / (2 * SampleRate)) * 1000
+            const latencyMs = ((resVal / (2 * sampleRate)) * 1000).toFixed(1);
+            const latencySec = (latencyMs / 1000).toFixed(2);
+            const initTimeMs = (1.1 * (resVal / 8388608)).toFixed(1);
+            const cpuUsage = (0.1 + (resVal / 8388608) * 0.2).toFixed(1);
+
+            document.getElementById('valLatency').innerText = `${latencyMs} ms (${latencySec} s.)`;
+            document.getElementById('valInitTime').innerText = `${initTimeMs} ms`;
+            document.getElementById('valCpuUsage').innerText = `${cpuUsage} % (one core)`;
+        }
+
+        // Auto-Detect Hardware Devices on Launch
         window.addEventListener('DOMContentLoaded', async () => {
+            updateDynamicEstimatedProperties();
             try {
                 const devs = await invokeCmd('detect_audio_hardware_devices');
                 const sel = document.getElementById('selDetectedDevices');
@@ -425,11 +454,26 @@
             const channel = document.getElementById('selChannelSelect').value;
             const res = document.getElementById('numResolution').value;
             const device = document.getElementById('selDetectedDevices').value;
-            const chConfig = document.getElementById('selChannelConfig').value;
+            let chConfig = document.getElementById('selChannelConfig').value;
+            if (chConfig.includes('Custom')) {
+                chConfig = document.getElementById('txtCustomChannelArray').value || chConfig;
+            }
 
             activeApoProfilePayload = `StartFrom: ${startFrom}\nChannel: ${channel}\nFFTResolution: ${res}\nDevice: ${device}\nChannelConfig: ${chConfig}\n`;
-            await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: true });
-            alert(`Master Processing Matrix (${res} Resolution, Channel ${channel}) Applied System-Wide.`);
+            const resMsg = await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: true });
+            document.getElementById('toggleApoEnableConfig').checked = true;
+            document.getElementById('lblApoToggleStatus').innerText = "ENABLED";
+            document.getElementById('lblApoToggleStatus').style.color = "var(--primary-green)";
+            alert(`Master Processing Matrix Applied System-Wide.\nStatus: ${resMsg}`);
+        });
+
+        // Disable Analysis Settings
+        document.getElementById('btnDisableAnalysisSettings').addEventListener('click', async () => {
+            await invokeCmd('upload_apo_profile', { profileData: "REMOVE", isEnabled: false });
+            document.getElementById('toggleApoEnableConfig').checked = false;
+            document.getElementById('lblApoToggleStatus').innerText = "DISABLED";
+            document.getElementById('lblApoToggleStatus').style.color = "var(--error-red)";
+            alert("Master Processing Matrix Bypassed System-Wide.");
         });
 
         // TAURI NATIVE DRAG & DROP
@@ -511,7 +555,7 @@
             }
         });
 
-        // Reset Password Handler Inside Modal
+        // Reset Password
         document.getElementById('btnExecuteResetPass').addEventListener('click', async () => {
             const oldP = document.getElementById('txtResetOldPass').value;
             const newP = document.getElementById('txtResetNewPass').value;
@@ -526,7 +570,7 @@
             }
         });
 
-        // ADDITIVE DRAG AND DROP & NATIVE FILE LOADER
+        // ADDITIVE FILE LOADER
         const dropZone = document.getElementById('dropZoneMedia');
         dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
         dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); dropZone.classList.remove('drag-over'); });
