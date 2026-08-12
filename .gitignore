@@ -4,7 +4,7 @@ target/
 node_modules/
 dist/
 
-# Security, Private DBs & Licensing
+# Security & Private DBs
 C:/ProgramData/Diviora/license.db
 *.db
 *.key

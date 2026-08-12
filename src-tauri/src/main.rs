@@ -20,7 +20,6 @@ fn main() {
             set_watermark_time_frame,
             clear_watermark_signature,
             set_native_track_path,
-            resolve_youtube_stream_url,
             detect_audio_hardware_devices,
             trigger_hardware_audio_playback,
             ingest_dropped_paths,

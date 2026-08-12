@@ -180,55 +180,11 @@ pub fn set_native_track_path(path: String, manager: State<'_, Arc<Mutex<Playback
     *track_path = path.clone();
     
     let path_buf = PathBuf::from(&path);
-    let display_name = if path.starts_with("http://") || path.starts_with("https://") {
-        path.clone()
-    } else {
-        path_buf.file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.clone())
-    };
+    let display_name = path_buf.file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
         
     Ok(display_name)
-}
-
-#[tauri::command]
-pub fn resolve_youtube_stream_url(youtube_url: String) -> Result<String, String> {
-    if youtube_url.contains("youtube.com") || youtube_url.contains("youtu.be") {
-        // Attempt 1: Subprocess invocation of yt-dlp if available
-        if let Ok(output) = Command::new("yt-dlp").args(["-f", "bestaudio", "-g", &youtube_url]).output() {
-            if output.status.success() {
-                let direct_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !direct_url.is_empty() { return Ok(direct_url); }
-            }
-        }
-        
-        // Attempt 2: Public stream API bridge fallback
-        let video_id = if youtube_url.contains("v=") {
-            youtube_url.split("v=").nth(1).unwrap_or("").split('&').next().unwrap_or("")
-        } else {
-            youtube_url.split('/').last().unwrap_or("")
-        };
-
-        if !video_id.is_empty() {
-            let stream_bridge_url = format!("https://pipedapi.kavin.rocks/streams/{}", video_id);
-            let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .map_err(|e| e.to_string())?;
-
-            if let Ok(res) = client.get(&stream_bridge_url).send() {
-                if let Ok(json) = res.json::<serde_json::Value>() {
-                    if let Some(audio_streams) = json.get("audioStreams").and_then(|s| s.as_array()) {
-                        if let Some(best) = audio_streams.first().and_then(|s| s.get("url")).and_then(|u| u.as_str()) {
-                            return Ok(best.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        return Err("Could not resolve YouTube stream URL.".into());
-    }
-    Ok(youtube_url)
 }
 
 #[tauri::command]
@@ -242,9 +198,7 @@ pub fn trigger_hardware_audio_playback(start: bool, handle: AppHandle, manager: 
         };
         if track_path.is_empty() { return Err("No track selected.".to_string()); }
 
-        let resolved_path = resolve_youtube_stream_url(track_path.clone()).unwrap_or(track_path);
-
-        if resolved_path.contains("trigger_test_tone") {
+        if track_path.contains("trigger_test_tone") {
             let mut manager_guard = mgr.lock().unwrap();
             manager_guard.stop();
             if let Some(ref h) = manager_guard.stream_handle.clone() {
@@ -259,26 +213,8 @@ pub fn trigger_hardware_audio_playback(start: bool, handle: AppHandle, manager: 
             }
         }
 
-        if resolved_path.starts_with("http://") || resolved_path.starts_with("https://") {
-            let handle_clone = handle.clone();
-            std::thread::spawn(move || {
-                let client = reqwest::blocking::Client::builder()
-                    .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DivioraStreamer/1.0")
-                    .build()
-                    .unwrap();
-                if let Ok(response) = client.get(&resolved_path).send() {
-                    if let Ok(bytes) = response.bytes() {
-                        let mut manager_guard = mgr.lock().unwrap();
-                        let _ = manager_guard.play_stream_bytes(bytes.to_vec());
-                        let _ = handle_clone.emit("telemetry-sync", "playing");
-                    }
-                }
-            });
-            return Ok("Streaming active.".to_string());
-        }
-
-        let path_buf = PathBuf::from(&resolved_path);
-        if !path_buf.exists() { return Err(format!("File does not exist: {}", resolved_path)); }
+        let path_buf = PathBuf::from(&track_path);
+        if !path_buf.exists() { return Err(format!("File does not exist: {}", track_path)); }
         let mut manager_guard = mgr.lock().unwrap();
         manager_guard.play_local_file(path_buf)?;
         let _ = handle.emit("telemetry-sync", "playing");
@@ -342,7 +278,6 @@ pub fn generate_invite_token(days_valid: u32) -> Result<String, String> {
 pub fn sync_project_to_github(commit_msg: String) -> Result<String, String> {
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     
-    // Ensure repository is initialized
     let _ = Command::new("git").args(["init"]).current_dir(&workspace).output();
     let _ = Command::new("git").args(["branch", "-M", "main"]).current_dir(&workspace).output();
     let _ = Command::new("git").args(["remote", "add", "origin", "https://github.com/MS2022Singh/secure_audio_project.git"]).current_dir(&workspace).output();

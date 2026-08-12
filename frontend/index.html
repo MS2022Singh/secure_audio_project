@@ -59,6 +59,10 @@
         .drop-box.drag-over { background: rgba(29, 185, 84, 0.15); border-color: var(--primary-hover); }
         .telemetry-bar { background: #0c0d14; padding: 12px 16px; border-radius: 6px; font-family: monospace; font-size: 12.5px; color: var(--primary-green); border: 1px solid #151624; }
 
+        .analysis-box { background: #0c0d15; border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; margin-top: 10px; }
+        .est-label { font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between; margin-bottom: 6px; }
+        .est-value { color: #fff; font-weight: bold; font-family: monospace; }
+
         .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.75); display: none; align-items: center; justify-content: center; z-index: 1000; }
         .modal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 12px; padding: 28px; width: 440px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8); }
     </style>
@@ -84,17 +88,9 @@
     <!-- MAIN CONTENT PLANE -->
     <div class="main-content">
         <div class="workspace-plane">
-            <!-- CONSUMER VIEW -->
+            <!-- CONSUMER VIEW (URL STREAM BOX COMPLETELY REMOVED) -->
             <div id="panelConsumerView" style="display: flex; flex-direction: column; gap: 20px;">
                 <h1 style="margin:0 0 10px 0; font-size: 26px;">DIVIORA CONSUMER PANEL</h1>
-
-                <!-- AUTO HARDWARE DEVICE DETECTOR -->
-                <div class="card">
-                    <h3 style="margin: 0 0 10px 0;">🎧 Auto-Detected System Audio Hardware</h3>
-                    <select id="selDetectedDevices">
-                        <option>Scanning audio hardware interfaces...</option>
-                    </select>
-                </div>
 
                 <div class="card">
                     <h3 style="margin: 0 0 12px 0;">🔊 Unified Audio Processing Core</h3>
@@ -104,12 +100,6 @@
                         📁 Drag & Drop Local Audio Files or Folders Here to Play
                     </div>
                     <input type="file" id="mediaFileInput" style="display:none;" multiple accept="audio/*" />
-
-                    <div style="display: flex; gap: 10px; margin-top: 16px; align-items: center;">
-                        <input type="text" id="txtMediaStreamUrl" placeholder="Paste direct stream link or YouTube URL (e.g. youtube.com/watch?v=...)" />
-                        <button class="btn-clear-x" id="btnClearStreamUrl">✕</button>
-                        <button class="btn-green" id="btnPlayStream" style="white-space: nowrap;">Play Stream</button>
-                    </div>
 
                     <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 16px; display: flex; gap: 10px; align-items: center;">
                         <button class="btn-dark" id="btnPrevTrack">⏮ Prev</button>
@@ -152,31 +142,73 @@
             <div id="panelDeveloperView" style="display: none; flex-direction: column; gap: 18px;">
                 <div>
                     <div class="badge-purple">REAL-TIME TELEMETRY SUITE</div>
-                    <h2 style="margin: 0; font-size: 22px;">Equalizer Distribution Sync & audiodg.exe Inspection</h2>
+                    <h2 style="margin: 0; font-size: 22px;">System Processing Core & Real-Time Inspection</h2>
                 </div>
 
-                <!-- HIGH-RES APO EDITOR PANEL (>7.1 CHANNELS + 8M FFT) -->
+                <!-- DEVICE & CHANNEL CONFIGURATION (MATCHING IMAGE 3) -->
                 <div class="card">
-                    <h3 style="margin: 0 0 12px 0;">🎛️ APO Equalizer Analysis & Resolution Settings</h3>
-                    <div class="grid-3" style="margin-bottom: 14px;">
+                    <h3 style="margin: 0 0 12px 0;">🎧 Device & Channel Configuration</h3>
+                    <div class="grid-2">
                         <div>
-                            <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 6px;">Custom FFT Resolution:</label>
-                            <input type="text" id="txtFftResolution" value="8388608" />
-                        </div>
-                        <div>
-                            <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 6px;">Channel Matrix (>7.1 Array):</label>
-                            <select id="selChannelMatrix">
-                                <option value="16">16-Channel 9.1.6 Dolby Atmos Array</option>
-                                <option value="24">24-Channel 22.2 Multichannel Matrix</option>
-                                <option value="8">8-Channel 7.1 Surround</option>
+                            <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 6px;">Device:</label>
+                            <select id="selDetectedDevices">
+                                <option>Scanning audio hardware interfaces...</option>
                             </select>
                         </div>
                         <div>
-                            <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 6px;">System Preamp Gain (dB):</label>
-                            <input type="number" id="numPreampGain" value="-6" />
+                            <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 6px;">Channel configuration:</label>
+                            <select id="selChannelConfig">
+                                <option value="From device (7.1 Surround)">From device (7.1 Surround)</option>
+                                <option value="From device (5.1 Surround)">From device (5.1 Surround)</option>
+                                <option value="From device (Stereo)">From device (Stereo)</option>
+                                <option value="Custom 16-Channel Array">Custom 16-Channel Array</option>
+                                <option value="Custom 24-Channel Array">Custom 24-Channel Array</option>
+                            </select>
                         </div>
                     </div>
-                    <button class="btn-green" id="btnApplyHighResApo">Apply High-Res APO Matrix System-Wide</button>
+                </div>
+
+                <!-- ANALYSIS PANEL SETTINGS & ESTIMATED PROPERTIES (MATCHING IMAGES 1 & 2 - PREAMP REMOVED) -->
+                <div class="card">
+                    <h3 style="margin: 0 0 12px 0;">🎛️ Analysis Panel Settings</h3>
+                    <div class="grid-2">
+                        <div class="analysis-box">
+                            <h4 style="margin:0 0 10px 0; font-size: 13px; color: var(--purple-text);">Settings</h4>
+                            <div style="margin-bottom: 8px;">
+                                <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 4px;">Start from:</label>
+                                <select id="selStartFrom">
+                                    <option value="config.txt">config.txt</option>
+                                    <option value="master_matrix.txt">master_matrix.txt</option>
+                                </select>
+                            </div>
+                            <div style="margin-bottom: 8px;">
+                                <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 4px;">Channel:</label>
+                                <select id="selChannelSelect">
+                                    <option value="L">L</option>
+                                    <option value="R">R</option>
+                                    <option value="C">C</option>
+                                    <option value="LFE">LFE</option>
+                                    <option value="Ls">Ls</option>
+                                    <option value="Rs">Rs</option>
+                                    <option value="Lb">Lb</option>
+                                    <option value="Rb">Rb</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 4px;">Resolution:</label>
+                                <input type="number" id="numResolution" value="8388608" placeholder="Custom resolution (e.g. 8388608)" />
+                            </div>
+                        </div>
+
+                        <div class="analysis-box">
+                            <h4 style="margin:0 0 10px 0; font-size: 13px; color: var(--primary-green);">Estimated properties</h4>
+                            <div class="est-label"><span>Peak gain:</span><span class="est-value">0.0 dB</span></div>
+                            <div class="est-label"><span>Latency:</span><span class="est-value">0.0 ms (0 s.)</span></div>
+                            <div class="est-label"><span>Init. time:</span><span class="est-value">1.1 ms</span></div>
+                            <div class="est-label"><span>CPU usage:</span><span class="est-value">0.1 % (one core)</span></div>
+                        </div>
+                    </div>
+                    <button class="btn-green" id="btnApplyAnalysisSettings" style="margin-top: 14px;">Apply Custom Matrix System-Wide</button>
                 </div>
 
                 <div class="card">
@@ -193,18 +225,18 @@
 
                     <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px;">
                         <div id="btnTriggerApoUpload" class="drop-box" style="flex-grow: 1;">
-                            📁 Click to Sync / Update Master Target .apo Configuration File
+                            📁 Click to Sync / Update Master Target Configuration File
                         </div>
                         <button id="btnLockApoConfig" class="btn-outline-green">🔒 Lock Config</button>
-                        <button id="btnRemoveApoFile" class="btn-red-outline">✕ Remove APO File</button>
+                        <button id="btnRemoveApoFile" class="btn-red-outline">✕ Remove Config File</button>
                     </div>
                     <input type="file" id="apoFileHiddenLoader" style="display:none;" accept=".txt,.apo" />
                     
                     <div id="lblApoSyncStatus" style="color:var(--primary-green); font-weight:700; font-size: 13px; margin-bottom: 4px;">
-                        ✔ [NATIVE SYSTEM SYNCED] Diviora Psychoacoustic Multichannel Stereo 4th May 2026.txt is live on disk.
+                        ✔ [NATIVE SYSTEM SYNCED] Diviora Psychoacoustic Matrix is live on disk.
                     </div>
                     <div id="lblApoScriptStatus" style="color: var(--purple-text); font-weight: 700; font-size: 13px; margin-bottom: 16px;">
-                        ✔ C++ APO Toolkit Script Saved to Desktop: ✔ Native System Hook Deployed & audiodg.exe Reset Complete
+                        ✔ Native C++ Matrix Hook Deployed & audiodg.exe Reset Complete
                     </div>
 
                     <div id="boxDllTelemetry" class="telemetry-bar">
@@ -212,8 +244,8 @@
                     </div>
 
                     <div style="display: flex; gap: 12px; margin-top: 18px;">
-                        <button class="btn-outline-green" id="btnDownloadApoReport">📄 Download APO Hardware Verification Report (.txt)</button>
-                        <button class="btn-outline-green" id="btnExportPs1Script">🛠️ Generate Native C++ APO Installer Script (.ps1)</button>
+                        <button class="btn-outline-green" id="btnDownloadApoReport">📄 Download Hardware Matrix Report (.txt)</button>
+                        <button class="btn-outline-green" id="btnExportPs1Script">🛠️ Generate Native C++ Installer Script (.ps1)</button>
                     </div>
                 </div>
 
@@ -350,8 +382,8 @@
         let isDevPanelRevealed = false;
         let isPlayingState = false;
         let isPlaylistCollapsed = false;
-        let activeApoProfilePayload = "Preamp: -6 dB\n";
-        let activeApoFileName = "Diviora Psychoacoustic Multichannel Stereo 4th May 2026.txt";
+        let activeApoProfilePayload = "FFTResolution: 8388608\n";
+        let activeApoFileName = "Diviora Psychoacoustic Matrix.txt";
         let currentLoadedTrackPath = "";
         let playlistQueue = [];
         let activeTrackIndex = 0;
@@ -364,15 +396,15 @@
             document.getElementById('menuDeveloper').className = p === 'developer' ? 'nav-item active' : 'nav-item';
         }
 
-        // Auto-Detect Hardware Audio Devices on Launch
+        // Auto-Detect Hardware Audio Interfaces
         window.addEventListener('DOMContentLoaded', async () => {
             try {
                 const devs = await invokeCmd('detect_audio_hardware_devices');
                 const sel = document.getElementById('selDetectedDevices');
                 if (devs && devs.length) {
-                    sel.innerHTML = devs.map(d => `<option>🎧 Active Interface: ${d}</option>`).join('');
+                    sel.innerHTML = devs.map(d => `<option value="${d}">${d}</option>`).join('');
                 } else {
-                    sel.innerHTML = `<option>Default Windows Audio Renderer Device</option>`;
+                    sel.innerHTML = `<option>Default Windows Audio Interface</option>`;
                 }
             } catch (e) {}
         });
@@ -387,14 +419,17 @@
             }
         });
 
-        // Apply High-Res APO Settings
-        document.getElementById('btnApplyHighResApo').addEventListener('click', async () => {
-            const fft = document.getElementById('txtFftResolution').value;
-            const preamp = document.getElementById('numPreampGain').value;
-            const channels = document.getElementById('selChannelMatrix').value;
-            activeApoProfilePayload = `Preamp: ${preamp} dB\nFFTResolution: ${fft}\nChannels: ${channels}\n`;
+        // Apply Analysis Settings
+        document.getElementById('btnApplyAnalysisSettings').addEventListener('click', async () => {
+            const startFrom = document.getElementById('selStartFrom').value;
+            const channel = document.getElementById('selChannelSelect').value;
+            const res = document.getElementById('numResolution').value;
+            const device = document.getElementById('selDetectedDevices').value;
+            const chConfig = document.getElementById('selChannelConfig').value;
+
+            activeApoProfilePayload = `StartFrom: ${startFrom}\nChannel: ${channel}\nFFTResolution: ${res}\nDevice: ${device}\nChannelConfig: ${chConfig}\n`;
             await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: true });
-            alert(`High-Res APO Profile (${fft} Taps, ${channels} Channels) Synced System-Wide.`);
+            alert(`Master Processing Matrix (${res} Resolution, Channel ${channel}) Applied System-Wide.`);
         });
 
         // TAURI NATIVE DRAG & DROP
@@ -476,7 +511,7 @@
             }
         });
 
-        // Reset Password
+        // Reset Password Handler Inside Modal
         document.getElementById('btnExecuteResetPass').addEventListener('click', async () => {
             const oldP = document.getElementById('txtResetOldPass').value;
             const newP = document.getElementById('txtResetNewPass').value;
@@ -491,7 +526,7 @@
             }
         });
 
-        // ADDITIVE FILE LOADER
+        // ADDITIVE DRAG AND DROP & NATIVE FILE LOADER
         const dropZone = document.getElementById('dropZoneMedia');
         dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
         dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); dropZone.classList.remove('drag-over'); });
@@ -592,31 +627,9 @@
             await playTrackIndex(prevIdx);
         });
 
-        // Clear Buttons
-        document.getElementById('btnClearStreamUrl').addEventListener('click', () => {
-            document.getElementById('txtMediaStreamUrl').value = "";
-        });
-
         document.getElementById('btnClearWatermarkSig').addEventListener('click', async () => {
             await invokeCmd('clear_watermark_signature');
             document.getElementById('lblWmSignatureStatus').innerText = "No payload loaded";
-        });
-
-        // Stream / YouTube Loader
-        document.getElementById('btnPlayStream').addEventListener('click', async () => {
-            const url = document.getElementById('txtMediaStreamUrl').value; if (!url) return;
-            document.getElementById('lblAudioStreamSource').innerText = "Resolving audio stream...";
-            try {
-                const resolvedUrl = await invokeCmd('resolve_youtube_stream_url', { youtubeUrl: url });
-                currentLoadedTrackPath = resolvedUrl;
-                const name = await invokeCmd('set_native_track_path', { path: resolvedUrl });
-                document.getElementById('lblAudioStreamSource').innerText = "Streaming: " + (url.contains("youtube") ? "YouTube Audio Track" : name);
-                await invokeCmd('trigger_hardware_audio_playback', { start: true });
-                isPlayingState = true;
-                document.getElementById('btnTogglePlayPause').innerText = "⏸ Pause";
-            } catch (err) {
-                document.getElementById('lblAudioStreamSource').innerText = "Stream Error: " + err;
-            }
         });
 
         // GitHub Sync
@@ -640,12 +653,12 @@
             if (isEnabled) {
                 document.getElementById('lblApoSyncStatus').innerText = "✔ [NATIVE SYSTEM SYNCED] " + activeApoFileName + " is live on disk.";
                 document.getElementById('lblApoSyncStatus').style.color = "var(--primary-green)";
-                document.getElementById('lblApoScriptStatus').innerText = "✔ C++ APO Toolkit Script Saved to Desktop: ✔ Native System Hook Deployed & audiodg.exe Reset Complete";
+                document.getElementById('lblApoScriptStatus').innerText = "✔ Native C++ Matrix Hook Deployed & audiodg.exe Reset Complete";
                 document.getElementById('lblApoScriptStatus').style.color = "var(--purple-text)";
             } else {
-                document.getElementById('lblApoSyncStatus').innerText = "● # DIVIORA SYSTEM-WIDE APO (BYPASSED / DISABLED)";
+                document.getElementById('lblApoSyncStatus').innerText = "● # DIVIORA SYSTEM-WIDE MATRIX (BYPASSED / DISABLED)";
                 document.getElementById('lblApoSyncStatus').style.color = "var(--error-red)";
-                document.getElementById('lblApoScriptStatus').innerText = "● Standby: Native sAPO Unloaded.";
+                document.getElementById('lblApoScriptStatus').innerText = "● Standby: Native Processing Unloaded.";
                 document.getElementById('lblApoScriptStatus').style.color = "var(--text-muted)";
             }
 
@@ -655,7 +668,7 @@
         // Lock Config
         document.getElementById('btnLockApoConfig').addEventListener('click', async () => {
             await invokeCmd('enforce_global_hardware_apo');
-            alert("APO Configuration Locked to System Storage (C:\\ProgramData\\Diviora\\config.txt).");
+            alert("Master System Processing Matrix Enforced to System Storage.");
         });
 
         // Free Access Token Generator
@@ -678,7 +691,7 @@
         // Download Audio Button
         document.getElementById('btnExportProcessedTrack').addEventListener('click', async () => {
             if (!currentLoadedTrackPath) {
-                alert("Please drag and drop or enter an audio track URL first.");
+                alert("Please drag and drop an audio track first.");
                 return;
             }
             try {
@@ -701,7 +714,7 @@
             document.getElementById('lblApoToggleStatus').style.color = "var(--primary-green)";
             document.getElementById('lblApoSyncStatus').innerText = "✔ [NATIVE SYSTEM SYNCED] " + activeApoFileName + " is live on disk.";
             document.getElementById('lblApoSyncStatus').style.color = "var(--primary-green)";
-            document.getElementById('lblApoScriptStatus').innerText = "✔ C++ APO Toolkit Script Saved to Desktop: ✔ Native System Hook Deployed & audiodg.exe Reset Complete";
+            document.getElementById('lblApoScriptStatus').innerText = "✔ Native C++ Matrix Hook Deployed & audiodg.exe Reset Complete";
             document.getElementById('lblApoScriptStatus').style.color = "var(--purple-text)";
             document.getElementById('btnRemoveApoFile').style.display = "inline-block";
         });
@@ -712,7 +725,7 @@
             document.getElementById('toggleApoEnableConfig').checked = false;
             document.getElementById('lblApoToggleStatus').innerText = "DISABLED";
             document.getElementById('lblApoToggleStatus').style.color = "var(--error-red)";
-            document.getElementById('lblApoSyncStatus').innerText = "● Standby: Native sAPO Unloaded.";
+            document.getElementById('lblApoSyncStatus').innerText = "● Standby: Native Processing Unloaded.";
             document.getElementById('lblApoSyncStatus').style.color = "var(--text-muted)";
             document.getElementById('lblApoScriptStatus').innerText = "● System Hook Disengaged";
             document.getElementById('lblApoScriptStatus').style.color = "var(--text-muted)";
