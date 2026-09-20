@@ -1,19 +1,19 @@
-﻿# Tauri & Rust build artifacts
-src-tauri/target/
+# Sensitive local state - never commit
+license.db
+*.db
+C:/ProgramData/Diviora/
+
+# Build artifacts
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+build/
 target/
 node_modules/
 dist/
 
-# Security & Private DBs
-C:/ProgramData/Diviora/license.db
-*.db
-*.key
-*.pem
-*.cert
-*.env
-.env.local
-
-# OS Metadata
-Thumbs.db
-Desktop.ini
-.DS_Store
+# Local backups taken during debugging
+registry_backups/
