@@ -2,6 +2,7 @@ pub mod playback;
 pub mod drop;
 pub mod security;
 pub mod commands;
+pub mod system_relay;
 
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -13,6 +14,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(system_relay::SystemRelayState::default())
         .setup(move |app| {
             app.manage(playback_manager);
             Ok(())
@@ -28,7 +30,12 @@ pub fn run() {
             commands::upload_apo_profile,
             commands::upload_signature,
             commands::toggle_watermark,
-            commands::verify_watermark_presence
+            commands::verify_watermark_presence,
+            system_relay::list_relay_audio_devices,
+            system_relay::start_system_relay,
+            system_relay::stop_system_relay,
+            system_relay::get_system_relay_status,
+            system_relay::export_camilladsp_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

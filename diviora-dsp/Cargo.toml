@@ -1,0 +1,14 @@
+[package]
+name = "diviora-dsp"
+version = "0.1.0"
+edition = "2021"
+description = "Equalizer APO config parser, biquad DSP engine, CamillaDSP exporter and WASAPI relay for Diviora"
+
+[features]
+default = []
+# The real-time capture -> DSP -> render relay (uses cpal / WASAPI on Windows).
+relay = ["dep:cpal", "dep:rtrb"]
+
+[dependencies]
+cpal = { version = "0.15", optional = true }
+rtrb = { version = "0.3", optional = true }

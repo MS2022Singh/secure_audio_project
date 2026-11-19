@@ -1,0 +1,16 @@
+# Typical Equalizer APO 1.4.2 config produced by the Configuration Editor / AutoEq
+Preamp: -6.2 dB
+Filter 1: ON LSC Fc 105 Hz Gain 5.5 dB Q 0.70
+Filter 2: ON PK Fc 180 Hz Gain -2.3 dB Q 0.91
+Filter 3: ON PK Fc 2600 Hz Gain 3.1 dB Q 2.10
+Filter 4: OFF PK Fc 4000 Hz Gain 1.0 dB Q 1.00
+Filter 5: ON HSC Fc 10000 Hz Gain -4.0 dB Q 0.70
+Include: bass_boost.txt
+Channel: L
+Delay: 0.5 ms
+Channel: all
+Copy: L=0.9*L+0.1*R R=0.1*L+0.9*R
+Device: Headphones
+Preamp: -3 dB
+Device: all
+GraphicEQ: 25 0; 40 1; 63 2
