@@ -9,6 +9,7 @@ pub mod camilla;
 pub mod engine;
 pub mod eqapo;
 pub mod ffi;
+pub mod watermark;
 
 pub use engine::Engine;
 pub use eqapo::{parse, EqApoConfig};

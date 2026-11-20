@@ -132,6 +132,7 @@ pub fn emit(stages: &[Stage], opt: &CamillaOptions, header_comment: &str) -> Str
                 }
                 steps.push(Step::Mixer(name));
             }
+            Stage::Watermark(_) => {} // Diviora-only; not part of a CamillaDSP export
         }
     }
 

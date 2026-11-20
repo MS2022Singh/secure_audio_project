@@ -19,6 +19,48 @@ pub fn detect_audio_hardware_devices() -> Result<Vec<String>, String> {
 // ACL-locked config.dvr when the developer presses Lock (enforce_global_hardware_apo).
 static STAGED_PROFILE: Mutex<Option<String>> = Mutex::new(None);
 static PROFILE_LOCKED: Mutex<bool> = Mutex::new(false);
+static EQ_ENABLED: Mutex<bool> = Mutex::new(true);
+
+/// Watermark settings (developer panel), held in memory and written only inside the
+/// encrypted config.dvr together with the equalizer profile.
+struct WatermarkState {
+    active: bool,
+    spec: diviora_dsp::watermark::WatermarkSpec,
+}
+fn watermark_state() -> &'static Mutex<WatermarkState> {
+    static S: std::sync::OnceLock<Mutex<WatermarkState>> = std::sync::OnceLock::new();
+    S.get_or_init(|| Mutex::new(WatermarkState {
+        active: false,
+        spec: diviora_dsp::watermark::WatermarkSpec { id: "dev-key-v1".into(), interval_s: 30.0, end_s: 3600.0, ..Default::default() },
+    }))
+}
+
+/// Equalizer profile (if enabled) + watermark lines (if active): what the APO receives.
+fn compose_apo_payload() -> String {
+    let mut payload = if *EQ_ENABLED.lock().unwrap() {
+        STAGED_PROFILE.lock().unwrap().clone().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let wm = watermark_state().lock().unwrap();
+    if wm.active {
+        if !payload.is_empty() && !payload.ends_with('\n') { payload.push('\n'); }
+        payload.push_str(&diviora_dsp::watermark::to_config_lines(&wm.spec));
+    }
+    payload
+}
+
+/// Re-write the locked config if Lock Config has been pressed (or a locked file exists).
+fn reapply_if_locked() -> Result<bool, String> {
+    if *PROFILE_LOCKED.lock().unwrap() || crate::apo_config::config_path().exists() {
+        crate::apo_config::write_locked_config(&compose_apo_payload())?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+fn applied_note(applied: bool) -> &'static str {
+    if applied { " Applied system-wide." } else { " Press Lock Config to apply system-wide." }
+}
 
 #[tauri::command]
 pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
@@ -26,16 +68,15 @@ pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: Stat
         if profile_data == "REMOVE" {
             *STAGED_PROFILE.lock().unwrap() = None;
         }
-        // Encrypted empty config = APO passes audio through unchanged.
-        crate::apo_config::write_locked_config("")?;
-        return Ok("System processing disabled (pass-through).".to_string());
+        *EQ_ENABLED.lock().unwrap() = false;
+        // Equalizer off = pass-through; an active watermark keeps running.
+        reapply_if_locked()?;
+        return Ok("Equalizer disabled (pass-through).".to_string());
     }
     let summary = diviora_dsp::eqapo::parse(&profile_data, None);
     *STAGED_PROFILE.lock().unwrap() = Some(profile_data.clone());
-    let locked = *PROFILE_LOCKED.lock().unwrap();
-    if locked {
-        crate::apo_config::write_locked_config(&profile_data)?;
-    }
+    *EQ_ENABLED.lock().unwrap() = true;
+    let locked = reapply_if_locked()?;
     let mut msg = format!(
         "Profile staged in memory: {} processing stage(s){}.",
         summary.stages.len(),
@@ -116,22 +157,52 @@ pub fn export_cpp_apo_bootstrap_script() -> Result<String, String> {
 
 #[tauri::command]
 pub fn set_watermark_time_frame(start_sec: u32, end_sec: u32, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
-    let mgr = manager.inner();
-    let mutex_lock = mgr.lock().unwrap();
-    let mut range_guard = mutex_lock.watermark_time_range.lock().unwrap();
-    *range_guard = (start_sec as f64, end_sec as f64);
-    Ok(format!("Watermark window locked: {}s to {}s", start_sec, end_sec))
+    {
+        let mgr = manager.inner();
+        let mutex_lock = mgr.lock().unwrap();
+        *mutex_lock.watermark_time_range.lock().unwrap() = (start_sec as f64, end_sec as f64);
+    }
+    {
+        let mut wm = watermark_state().lock().unwrap();
+        wm.spec.start_s = start_sec as f64;
+        wm.spec.end_s = end_sec as f64;
+    }
+    let applied = reapply_if_locked()?;
+    Ok(format!("Watermark window: {}s to {}s of every stream.{}", start_sec, end_sec, applied_note(applied)))
+}
+
+/// Signature ID, carrier frequency, amplitude, burst interval and auto (signal-gated) mode.
+#[tauri::command]
+pub fn set_watermark_params(signature_id: String, carrier_hz: f64, amplitude: f64, interval_sec: f64, auto_mode: bool) -> Result<String, String> {
+    let line = format!("Id {} Freq {} Amp {} Interval {} Auto {}", signature_id.trim(), carrier_hz, amplitude, interval_sec.max(0.0), auto_mode as u8);
+    let parsed = diviora_dsp::watermark::parse_watermark_line(&line)?;
+    {
+        let mut wm = watermark_state().lock().unwrap();
+        wm.spec.id = parsed.id;
+        wm.spec.freq = parsed.freq;
+        wm.spec.amp = parsed.amp;
+        wm.spec.interval_s = parsed.interval_s;
+        wm.spec.gate_on_signal = parsed.gate_on_signal;
+    }
+    let applied = reapply_if_locked()?;
+    Ok(format!(
+        "Watermark set: ID {}, {} Hz, amplitude {} ({:.1} dBFS), {}.{}",
+        signature_id.trim(), carrier_hz, amplitude, 20.0 * amplitude.max(1e-9).log10(),
+        if interval_sec > 0.0 { format!("burst every {} s", interval_sec) } else { "continuous".to_string() },
+        applied_note(applied)
+    ))
 }
 
 #[tauri::command]
 pub fn clear_watermark_signature(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
-    let mgr = manager.inner();
-    let mutex_lock = mgr.lock().unwrap();
-    let mut sig_guard = mutex_lock.watermark_signature.lock().unwrap();
-    let mut active_guard = mutex_lock.watermark_active.lock().unwrap();
-    sig_guard.clear();
-    *active_guard = false;
-    Ok("Signature cleared.".to_string())
+    {
+        let mgr = manager.inner();
+        let mutex_lock = mgr.lock().unwrap();
+        mutex_lock.watermark_signature.lock().unwrap().clear();
+    }
+    watermark_state().lock().unwrap().spec.clip = None;
+    let applied = reapply_if_locked()?;
+    Ok(format!("Watermark audio removed; using the generated frequency signature.{}", applied_note(applied)))
 }
 
 #[tauri::command]
@@ -160,8 +231,21 @@ pub fn generate_apo_verification_report(config_data: String) -> Result<String, S
 
 #[tauri::command]
 pub fn generate_watermark_audit_report(_manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
-    let desktop_path = dirs::desktop_dir().unwrap_or_else(|| PathBuf::from("C:\\")).join("DIVIORA_Watermark_FFT_Audit_Report.txt");
-    fs::write(&desktop_path, "DIVIORA WATERMARK REPORT\nVERDICT: CONFIRMED").map_err(|e| e.to_string())?;
+    let desktop_path = dirs::desktop_dir().unwrap_or_else(|| PathBuf::from("C:\\")).join("DIVIORA_Watermark_Audit_Report.txt");
+    let wm = watermark_state().lock().unwrap();
+    let report = format!(
+        "DIVIORA WATERMARK SETTINGS REPORT\n\
+         Active: {}\nSignature ID: {}\nCarrier: {} Hz\nAmplitude: {} ({:.1} dBFS)\n\
+         Source: {}\nWindow: {} s to {} s of each stream\nInterval: {} s (0 = continuous)\nAuto (only under programme audio): {}\n\
+         Locked config present: {}\n\
+         Note: this report lists the configured settings. Detection of the signature in a recording\n\
+         is done with diviora_dsp::watermark::detect (tone mode).\n",
+        wm.active, wm.spec.id, wm.spec.freq, wm.spec.amp, 20.0 * wm.spec.amp.max(1e-9).log10(),
+        match &wm.spec.clip { Some(c) => format!("uploaded audio ({:.1} s)", c.len() as f64 / wm.spec.clip_rate as f64), None => "generated frequency signature".to_string() },
+        wm.spec.start_s, wm.spec.end_s, wm.spec.interval_s, wm.spec.gate_on_signal,
+        crate::apo_config::config_path().exists()
+    );
+    fs::write(&desktop_path, report).map_err(|e| e.to_string())?;
     Ok(desktop_path.to_string_lossy().to_string())
 }
 
@@ -276,9 +360,11 @@ pub fn get_live_amplitude_metrics(manager: State<'_, Arc<Mutex<PlaybackManager>>
 
 #[tauri::command]
 pub fn enforce_global_hardware_apo(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
-    let staged = STAGED_PROFILE.lock().unwrap().clone()
-        .ok_or_else(|| "Upload a configuration file first, then press Lock Config.".to_string())?;
-    let path = crate::apo_config::write_locked_config(&staged)?;
+    let payload = compose_apo_payload();
+    if payload.trim().is_empty() {
+        return Err("Upload a configuration file (or enable the watermark) first, then press Lock Config.".to_string());
+    }
+    let path = crate::apo_config::write_locked_config(&payload)?;
     crate::apo_config::remove_legacy_plaintext();
     *PROFILE_LOCKED.lock().unwrap() = true;
     {
@@ -299,22 +385,52 @@ pub fn authenticate_user_session(user_id: String, hwid: String) -> Result<String
     SecurityManager::verify_session_exclusivity(&user_id, &hwid).map(|_| "Authenticated.".to_string())
 }
 
+/// Developer uploads a watermark audio clip (WAV/MP3/FLAC/OGG). It replaces the generated
+/// tone and is mixed at the configured amplitude under everything the APO processes.
 #[tauri::command]
 pub fn upload_signature(signature: Vec<u8>, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
-    let mgr = manager.inner();
-    let mutex_lock = mgr.lock().unwrap();
-    let mut sig_lock = mutex_lock.watermark_signature.lock().unwrap();
-    *sig_lock = signature;
-    Ok(format!("Payload loaded: {} bytes", sig_lock.len()))
+    use rodio::Source;
+    let decoder = rodio::Decoder::new(std::io::Cursor::new(signature.clone()))
+        .map_err(|_| "Not a supported audio file. Upload a WAV, MP3, FLAC or OGG clip.".to_string())?;
+    let channels = decoder.channels().max(1) as usize;
+    let rate = decoder.sample_rate().max(1);
+    let max_samples = (diviora_dsp::watermark::MAX_CLIP_SECONDS * rate as f64) as usize * channels;
+    let interleaved: Vec<i16> = decoder.take(max_samples).collect();
+    let mono: Vec<f32> = interleaved
+        .chunks(channels)
+        .map(|f| f.iter().map(|s| *s as f32 / 32768.0).sum::<f32>() / channels as f32)
+        .collect();
+    if mono.len() < (rate as usize) / 10 {
+        return Err("Watermark clip is shorter than 0.1 s.".to_string());
+    }
+    // Normalise so the configured Amplitude is the clip's peak level.
+    let peak = mono.iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
+    let clip: Vec<f32> = diviora_dsp::watermark::resample_linear(&mono, rate, 48000).iter().map(|s| s / peak).collect();
+    let seconds = clip.len() as f64 / 48000.0;
+    {
+        let mgr = manager.inner();
+        let mutex_lock = mgr.lock().unwrap();
+        *mutex_lock.watermark_signature.lock().unwrap() = signature;
+    }
+    {
+        let mut wm = watermark_state().lock().unwrap();
+        wm.spec.clip = Some(clip);
+        wm.spec.clip_rate = 48000;
+    }
+    let applied = reapply_if_locked()?;
+    Ok(format!("Watermark audio loaded ({:.1} s); it replaces the generated tone.{}", seconds, applied_note(applied)))
 }
 
 #[tauri::command]
 pub fn toggle_watermark(active: bool, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<bool, String> {
-    let mgr = manager.inner();
-    let mutex_lock = mgr.lock().unwrap();
-    let mut active_lock = mutex_lock.watermark_active.lock().unwrap();
-    *active_lock = active;
-    Ok(*active_lock)
+    {
+        let mgr = manager.inner();
+        let mutex_lock = mgr.lock().unwrap();
+        *mutex_lock.watermark_active.lock().unwrap() = active;
+    }
+    watermark_state().lock().unwrap().active = active;
+    reapply_if_locked()?;
+    Ok(active)
 }
 
 #[tauri::command]

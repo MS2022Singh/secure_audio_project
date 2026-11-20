@@ -34,6 +34,7 @@ fn main() {
             commands::export_processed_audio_file,
             commands::export_cpp_apo_bootstrap_script,
             commands::set_watermark_time_frame,
+            commands::set_watermark_params,
             commands::clear_watermark_signature,
             commands::ingest_dropped_paths,
             commands::generate_apo_verification_report,

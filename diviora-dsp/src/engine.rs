@@ -4,6 +4,7 @@
 //! does not allocate, lock or perform I/O, so it is safe to call from an audio callback.
 
 use crate::eqapo::{BiquadSpec, ChannelSel, FilterKind, Shape, Stage, MAX_CHANNELS};
+use crate::watermark::Watermarker;
 use std::f64::consts::PI;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,6 +77,7 @@ enum CStage {
     Biquad { c: Coefs, on: [bool; MAX_CHANNELS], z: [[f64; 2]; MAX_CHANNELS] },
     Delay { lines: Vec<Option<(Vec<f32>, usize)>> },
     Mix { m: [[f32; MAX_CHANNELS]; MAX_CHANNELS] },
+    Watermark(Box<Watermarker>),
 }
 
 pub struct Engine {
@@ -136,6 +138,7 @@ impl Engine {
                     }
                     out.push(CStage::Mix { m });
                 }
+                Stage::Watermark(spec) => out.push(CStage::Watermark(Box::new(Watermarker::new(spec, sample_rate)))),
             }
         }
         Engine { channels, sample_rate, stages: out, revision }
@@ -185,6 +188,7 @@ impl Engine {
                         }
                     }
                 }
+                CStage::Watermark(w) => w.process_frame(&mut frame[..n]),
                 CStage::Mix { m } => {
                     let mut tmp = [0.0f32; MAX_CHANNELS];
                     tmp[..n].copy_from_slice(&frame[..n]);

@@ -140,4 +140,27 @@ mod tests {
         assert!(!h.is_null());
         dvr_engine_destroy(h);
     }
+
+    #[test]
+    fn ffi_eq_plus_watermark_end_to_end() {
+        // What the APO receives after Lock Config with the watermark enabled.
+        let text = b"Preamp: -3 dB\nFilter: ON PK Fc 1000 Hz Gain -6 dB Q 1\nDivioraWatermark: Id dev-key-v1 Freq 16000 Amp 0.0008 Start 0 End 0 Interval 0 Auto 1\n";
+        let (mut st, mut wn) = (0u32, 0u32);
+        let e = dvr_engine_create(text.as_ptr(), text.len(), std::ptr::null(), 48000, 2, &mut st, &mut wn);
+        assert!(!e.is_null());
+        assert_eq!((st, wn), (3, 0));
+        let sr = 48000.0;
+        let mut buf: Vec<f32> = (0..48000 * 3).flat_map(|i| {
+            let t = i as f64 / sr;
+            let v = (0.3 * (2.0 * std::f64::consts::PI * 300.0 * t).sin()) as f32;
+            [v, v]
+        }).collect();
+        for chunk in buf.chunks_mut(480 * 2) {
+            dvr_engine_process(e, chunk.as_mut_ptr(), (chunk.len() / 2) as u32, 2);
+        }
+        dvr_engine_destroy(e);
+        let left: Vec<f32> = buf.iter().step_by(2).copied().collect();
+        let d = crate::watermark::detect(&left, 48000, 16000.0, "dev-key-v1");
+        assert!(d.found, "{:?}", d);
+    }
 }

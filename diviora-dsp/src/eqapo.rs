@@ -4,6 +4,7 @@
 //! a [`Stage`] in the parsed pipeline, or a [`Warning`] explaining why it was
 //! not converted. Nothing is dropped silently.
 
+use crate::watermark::{self, WatermarkSpec};
 use std::fmt;
 
 /// Equalizer APO channel order for up to 7.1: L R C SUB RL RR SL SR.
@@ -65,6 +66,8 @@ pub enum Stage {
     /// `Copy:` – each entry is (destination channel, [(source channel, linear factor)]).
     /// Channels that are not a destination keep their own signal.
     Mix { routes: Vec<(usize, Vec<(usize, f64)>)> },
+    /// Diviora frequency-signature watermark (DivioraWatermark: / DivioraWatermarkClip:).
+    Watermark(WatermarkSpec),
 }
 
 /// Which output device a stage applies to (`Device:` command).
@@ -256,6 +259,18 @@ fn parse_into(
                 match resolver.and_then(|r| r(name)) {
                     Some(sub) => parse_into(&sub, name, resolver, depth + 1, st, cfg),
                     None => warn(cfg, file, lineno, line, "included file not available; upload its contents too"),
+                }
+            }
+            "diviorawatermark" => match watermark::parse_watermark_line(args) {
+                Ok(w) => cfg.stages.push((st.device.clone(), Stage::Watermark(w))),
+                Err(e) => warn(cfg, file, lineno, cmd_full, e),
+            },
+            "diviorawatermarkclip" => {
+                let target = cfg.stages.iter_mut().rev().find_map(|(_, s)| match s { Stage::Watermark(w) => Some(w), _ => None });
+                match (watermark::parse_clip_line(args), target) {
+                    (Ok((rate, clip)), Some(w)) => { w.clip = Some(clip); w.clip_rate = rate; }
+                    (Ok(_), None) => warn(cfg, file, lineno, cmd_full, "watermark clip without a DivioraWatermark line"),
+                    (Err(e), _) => warn(cfg, file, lineno, cmd_full, e),
                 }
             }
             "stage" => {} // pre-mix/post-mix placement has no meaning outside audiodg
