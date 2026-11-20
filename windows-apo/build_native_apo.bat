@@ -40,7 +40,7 @@ dumpbin /nologo /dependents build\Release\DivioraAPO.dll | findstr /i "vcruntime
 echo === 4/4 apo_selftest.exe and injector_single_slot.exe ===
 cl %CFLAGS% tests\apo_selftest.cpp /Fobuild\Release\ /Fe:build\Release\apo_selftest.exe ole32.lib crypt32.lib
 if errorlevel 1 goto :fail
-cl %CFLAGS% ..\windows-installer\injector_single_slot.cpp /Fobuild\Release\ /Fe:build\Release\injector_single_slot.exe ole32.lib
+cl %CFLAGS% ..\windows-installer\injector_single_slot.cpp /Fobuild\Release\ /Fe:build\Release\injector_single_slot.exe ole32.lib advapi32.lib
 if errorlevel 1 goto :fail
 
 echo.
