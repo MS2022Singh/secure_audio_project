@@ -1,0 +1,2 @@
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+cl.exe /O2 /std:c++20 /EHsc EndpointDiscovery.cpp /link /OUT:EndpointDiscovery.exe Ole32.lib Shell32.lib Advapi32.lib

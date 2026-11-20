@@ -1,0 +1,27 @@
+{
+  "schema": "com.diviora.dsp",
+  "version": 1,
+  "revision": 100,
+  "sample_rates": [44100, 48000, 96000],
+  "channels": 2,
+  "preamp_db": -3.0,
+  "bands": [
+    {
+      "type": "peaking",
+      "frequency_hz": 1000.0,
+      "gain_db": -6.0,
+      "q": 1.0,
+      "slope": null,
+      "enabled": true
+    }
+  ],
+  "channel_matrix": [
+    [1.0, 0.0],
+    [0.0, 1.0]
+  ],
+  "limiter": {
+    "enabled": true,
+    "ceiling_db": -1.0,
+    "release_ms": 100.0
+  }
+}

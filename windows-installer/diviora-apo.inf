@@ -1,0 +1,41 @@
+;
+; DivioraAPO.inf - Windows Audio Processing Object Extension Package
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Extension
+ClassGuid   = {e2f84ce7-8efa-411c-aa69-97454ca4cb57}
+Provider    = %ManufacturerName%
+ExtensionId = {D1B100A1-8888-4444-9999-000000000001}
+CatalogFile = DivioraAPO.cat
+DriverVer   = 08/12/2026,1.0.0.0
+
+[Manufacturer]
+%ManufacturerName% = DivioraDevice,NTamd64
+
+[DivioraDevice.NTamd64]
+%DivioraAPO.DeviceDesc% = DivioraAPO_Install, AUDIOCLASS\COMPATIBLE_AUDIO_RENDER
+
+[DivioraAPO_Install]
+CopyFiles = DivioraAPO.CopyFiles
+
+[DivioraAPO_Install.HW]
+AddReg = DivioraAPO_Fx_AddReg
+
+[DivioraAPO.CopyFiles]
+DivioraAPO.dll
+
+[DivioraAPO_Fx_AddReg]
+; Register PKEY_FX_StreamEffectClsid for System Effects (SFX)
+HKR,"FxProperties", "{d04e0571-6131-41e3-af0f-31a89c93390c},1", 0x00000000, "%DivioraAPO.CLSID%"
+; Register PKEY_FX_ModeEffectClsid for Mode Effects (MFX)
+HKR,"FxProperties", "{d04e0571-6131-41e3-af0f-31a89c93390c},2", 0x00000000, "%DivioraAPO.CLSID%"
+
+[DestinationDirs]
+DefaultDestDir = 13 ; DriverStore
+
+[Strings]
+ManufacturerName      = "Diviora Psychoacoustics"
+DivioraAPO.DeviceDesc = "Diviora System Audio Processing Object Extension"
+DivioraAPO.CLSID      = "{D1B100A1-8888-4444-9999-000000000001}"
