@@ -1,11 +1,10 @@
-use std::sync::{Arc, Mutex};
+﻿use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 pub mod playback;
 pub mod drop;
 pub mod security;
 pub mod commands;
-pub mod system_relay;
 
 pub use playback::manager::PlaybackManager;
 
@@ -16,7 +15,6 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(system_relay::SystemRelayState::default())
         .manage(manager.clone())
         .setup(move |app| {
             app.manage(manager.clone());
@@ -48,12 +46,7 @@ fn main() {
             commands::authenticate_user_session,
             commands::upload_signature,
             commands::toggle_watermark,
-            commands::verify_watermark_presence,
-            system_relay::list_relay_audio_devices,
-            system_relay::start_system_relay,
-            system_relay::stop_system_relay,
-            system_relay::get_system_relay_status,
-            system_relay::export_camilladsp_config
+            commands::verify_watermark_presence
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

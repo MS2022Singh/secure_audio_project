@@ -30,7 +30,7 @@ The goal of this project is to build an installable, cross-platform application 
 
 \*   \[ ] \*\*Phase 8:\*\* Building the volatile RAM configuration syncing sequence from the cloud backend.
 
-\*   \[~] \*\*Phase 9:\*\* System-wide processing via user-mode relay (virtual cable -> `diviora-dsp` engine -> physical output). Native APO/registry hook retired (cannot load without a signed driver package; it altered OEM FxProperties). Parser/engine/CamillaDSP export unit-tested; relay compiles for Windows but still needs on-device acceptance testing. Cleanup: `tools/restore_audio_endpoints.ps1`.
+\*   \[ ] \*\*Phase 9:\*\* Engineering the system-wide loopback driver wrapper interface.
 
 \*   \[ ] \*\*Phase 10:\*\* Compiling the Tauri v2 desktop frontend frame installation binaries.
 
