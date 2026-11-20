@@ -38,6 +38,16 @@ function Assert-Admin {
         throw 'Run this from an elevated (Administrator) PowerShell.'
     }
 }
+function Ensure-AudioRunning {
+    foreach ($svc in 'AudioEndpointBuilder', 'Audiosrv') {
+        $sv = Get-Service $svc
+        if ($sv.Status -ne 'Running') {
+            Say "  Starting $svc (it was $($sv.Status))..." 'Yellow'
+            Start-Service $svc
+            $sv.WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+        }
+    }
+}
 function Set-Sddl($path, $sddl) {
     $acl = Get-Acl -Path $path
     $acl.SetSecurityDescriptorSddlForm($sddl)
@@ -80,6 +90,7 @@ if ($Uninstall) {
         Remove-Item $TargetDll -Force
         Start-Service Audiosrv
     }
+    Ensure-AudioRunning
     Say 'Uninstalled. Reboot once so Windows rebuilds the audio graph. The locked config in' 'Green'
     Say "$ApoDir is kept (encrypted); delete it as Administrator if you no longer need it."
     exit 0
@@ -98,8 +109,12 @@ Pop-Location
 if ($selftest -ne 0) { throw 'Self-test failed. Nothing was installed.' }
 
 Say '=== 2/5 Backup of the default speakers ===' 'Cyan'
-$guid = (& (Join-Path $BuildDir 'injector_single_slot.exe') --print-guid | Select-Object -Last 1).Trim()
-if ($guid -notmatch '^\{[0-9a-fA-F-]{36}\}$') { throw "Could not read the default speakers' endpoint GUID (got '$guid')." }
+Ensure-AudioRunning
+$guidOut = & (Join-Path $BuildDir 'injector_single_slot.exe') --print-guid | Select-Object -Last 1
+$guid = if ($guidOut) { "$guidOut".Trim() } else { '' }
+if ($guid -notmatch '^\{[0-9a-fA-F-]{36}\}$') {
+    throw "Could not read the default speakers' endpoint GUID. Check that a playback device is set as default in Sound settings. Nothing was changed."
+}
 & $BackupPs1 -EndpointGuid $guid -Mode backup
 New-Item -ItemType Directory -Force -Path (Split-Path $Manifest) | Out-Null
 @{ EndpointGuid = $guid; InstalledAt = (Get-Date).ToString('s') } | ConvertTo-Json | Set-Content $Manifest
@@ -132,9 +147,14 @@ try {
 catch {
     Say "ERROR: $($_.Exception.Message)" 'Red'
     Say 'Rolling back to native Windows audio...' 'Yellow'
-    & $BackupPs1 -EndpointGuid $guid -Mode restore
-    Start-Service Audiosrv -ErrorAction SilentlyContinue
-    Say 'Rolled back. Native audio settings restored.' 'Yellow'
+    try { Ensure-AudioRunning } catch { Say "Could not start Windows Audio: $($_.Exception.Message). Reboot to restore sound." 'Red' }
+    try {
+        & $BackupPs1 -EndpointGuid $guid -Mode restore
+        Say 'Rolled back. Native audio settings restored.' 'Yellow'
+    } catch {
+        Say "Rollback of registry values failed: $($_.Exception.Message)" 'Red'
+        Say "Run:  install_native_apo.ps1 -Uninstall   and reboot." 'Red'
+    }
     exit 1
 }
 
