@@ -3,7 +3,7 @@
 //   injector_single_slot.exe                       bind DivioraAPO to the default speakers
 //   injector_single_slot.exe --print-guid          print the default speakers' endpoint GUID
 //   injector_single_slot.exe --dump [guid]         read-only: list FxProperties values + owner/DACL
-//   injector_single_slot.exe --write <guid> <name> <sz|dword|delete> [data]
+//   injector_single_slot.exe --write <guid> <name> <sz|msz|dword|delete> [data]   (msz: items separated by |)
 //                                                  set/delete one FxProperties value (used by restore)
 //
 // FxProperties keys are not writable by Administrators by default. Like Equalizer APO's
@@ -186,12 +186,17 @@ static int Dump(const std::wstring& guid) {
     return 0;
 }
 
-static bool HasValue(const std::wstring& sub, const std::wstring& name) {
+static bool ReadMultiSz(const std::wstring& sub, const std::wstring& name, std::vector<std::wstring>& out) {
     HKEY k = nullptr;
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, sub.c_str(), 0, KEY_QUERY_VALUE, &k) != ERROR_SUCCESS) return false;
-    bool has = RegQueryValueExW(k, name.c_str(), nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS;
+    DWORD type = 0, len = 0;
+    bool ok = RegQueryValueExW(k, name.c_str(), nullptr, &type, nullptr, &len) == ERROR_SUCCESS && type == REG_MULTI_SZ;
+    std::vector<wchar_t> buf(len / sizeof(wchar_t) + 2, 0);
+    if (ok) ok = RegQueryValueExW(k, name.c_str(), nullptr, &type, (BYTE*)buf.data(), &len) == ERROR_SUCCESS;
     RegCloseKey(k);
-    return has;
+    if (!ok) return false;
+    for (const wchar_t* p = buf.data(); *p; p += wcslen(p) + 1) out.emplace_back(p);
+    return true;
 }
 
 static int WriteOne(const std::wstring& guid, const std::wstring& name, const std::wstring& kind, const std::wstring& data) {
@@ -206,6 +211,18 @@ static int WriteOne(const std::wstring& guid, const std::wstring& name, const st
     } else if (kind == L"dword") {
         DWORD v = static_cast<DWORD>(wcstoul(data.c_str(), nullptr, 10));
         rc = RegSetValueExW(k, name.c_str(), 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
+    } else if (kind == L"msz") {
+        std::vector<wchar_t> buf;
+        size_t start = 0;
+        while (start <= data.size()) {
+            size_t bar = data.find(L'|', start);
+            std::wstring item = data.substr(start, bar == std::wstring::npos ? std::wstring::npos : bar - start);
+            if (!item.empty()) { buf.insert(buf.end(), item.begin(), item.end()); buf.push_back(L'\0'); }
+            if (bar == std::wstring::npos) break;
+            start = bar + 1;
+        }
+        buf.push_back(L'\0');
+        rc = RegSetValueExW(k, name.c_str(), 0, REG_MULTI_SZ, (const BYTE*)buf.data(), (DWORD)(buf.size() * sizeof(wchar_t)));
     } else if (kind == L"sz") {
         rc = RegSetValueExW(k, name.c_str(), 0, REG_SZ, (const BYTE*)data.c_str(), (DWORD)((data.size() + 1) * sizeof(wchar_t)));
     } else {
@@ -225,11 +242,10 @@ static int Bind() {
         return 1;
     }
     std::wstring sub = FxSubKey(guid);
-    if (HasValue(sub, std::wstring(kFxPropsRoot) + kCompositeStreamSlot)) {
-        std::wcerr << L"[-] " << name << L" uses composite effect slots ({d04e05a6-...},13); the ,5 slot would be ignored.\n"
-                      L"    No changes made. Send the output of: injector_single_slot.exe --dump" << std::endl;
-        return 2;
-    }
+    const std::wstring compositeName = std::wstring(kFxPropsRoot) + kCompositeStreamSlot;
+    std::vector<std::wstring> composite;
+    const bool isComposite = ReadMultiSz(sub, compositeName, composite);
+
     AccessGuard guard;
     HKEY k = nullptr;
     LONG rc = OpenFxForWrite(sub, guard, &k);
@@ -237,8 +253,21 @@ static int Bind() {
         std::wcerr << L"[-] Cannot open FxProperties for writing (err=" << rc << L"). No changes made." << std::endl;
         return 1;
     }
-    std::wstring slot = std::wstring(kFxPropsRoot) + kStreamEffectSlot;
-    LONG r1 = RegSetValueExW(k, slot.c_str(), 0, REG_SZ, (const BYTE*)kDivioraClsid, (DWORD)((wcslen(kDivioraClsid) + 1) * sizeof(wchar_t)));
+    LONG r1;
+    if (isComposite) {
+        // Composite driver (Windows 10 1703+ DCH): Windows reads the ,13 list, not ,5.
+        // Put Diviora first and keep every existing stream effect (e.g. Waves).
+        std::vector<wchar_t> buf;
+        auto add = [&](const std::wstring& item) { buf.insert(buf.end(), item.begin(), item.end()); buf.push_back(L'\0'); };
+        add(kDivioraClsid);
+        for (const auto& c : composite) if (_wcsicmp(c.c_str(), kDivioraClsid) != 0) add(c);
+        buf.push_back(L'\0');
+        r1 = RegSetValueExW(k, compositeName.c_str(), 0, REG_MULTI_SZ, (const BYTE*)buf.data(), (DWORD)(buf.size() * sizeof(wchar_t)));
+        std::wcout << L"[i] Composite stream effects: Diviora + " << composite.size() << L" existing entr" << (composite.size() == 1 ? L"y" : L"ies") << L" kept." << std::endl;
+    } else {
+        std::wstring slot = std::wstring(kFxPropsRoot) + kStreamEffectSlot;
+        r1 = RegSetValueExW(k, slot.c_str(), 0, REG_SZ, (const BYTE*)kDivioraClsid, (DWORD)((wcslen(kDivioraClsid) + 1) * sizeof(wchar_t)));
+    }
     DWORD zero = 0;
     LONG r2 = RegSetValueExW(k, kDisableSysFxName, 0, REG_DWORD, (const BYTE*)&zero, sizeof(zero));
     RegCloseKey(k);
@@ -247,7 +276,7 @@ static int Bind() {
         std::wcerr << L"[-] Value write failed (r1=" << r1 << L" r2=" << r2 << L")." << std::endl;
         return 1;
     }
-    std::wcout << L"[+] Bound (StreamEffect only) to: " << name << L" [" << guid << L"]" << std::endl;
+    std::wcout << L"[+] Bound (stream effect" << (isComposite ? L", composite ,13" : L", ,5") << L") to: " << name << L" [" << guid << L"]" << std::endl;
     std::wcout << L"[+] Original registry permissions restored." << std::endl;
     return 0;
 }
@@ -268,7 +297,7 @@ int wmain(int argc, wchar_t** argv) {
     } else if (mode.empty()) {
         rc = Bind();
     } else {
-        std::wcerr << L"usage: injector_single_slot.exe [--print-guid | --dump [guid] | --write <guid> <name> <sz|dword|delete> [data]]" << std::endl;
+        std::wcerr << L"usage: injector_single_slot.exe [--print-guid | --dump [guid] | --write <guid> <name> <sz|msz|dword|delete> [data]]" << std::endl;
     }
     CoUninitialize();
     return rc;

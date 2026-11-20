@@ -8,6 +8,7 @@ $backupFile = "C:\ProgramData\Diviora\registry_backups\endpoint_$($EndpointGuid.
 
 $valueNames = @(
     "{D04E05A6-594B-4fb6-A80D-01AF5EED7D1D},5",
+    "{D04E05A6-594B-4fb6-A80D-01AF5EED7D1D},13",
     "{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5"
 )
 
@@ -20,14 +21,14 @@ if ($Mode -eq "backup") {
     foreach ($name in $valueNames) {
         $val = (Get-ItemProperty -Path $fxKey -Name $name -ErrorAction SilentlyContinue).$name
         if ($null -ne $val) {
-            $backupData[$name] = $val
-            Write-Host "  [+] Backed up $name = $val" -ForegroundColor Green
+            if ($val -is [array]) { $backupData[$name] = @($val) } else { $backupData[$name] = $val }
+            Write-Host "  [+] Backed up $name = $($val -join ' | ')" -ForegroundColor Green
         } else {
             Write-Host "  [i] $name was not set (nothing to back up)" -ForegroundColor DarkGray
         }
     }
     New-Item -Path (Split-Path $backupFile) -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
-    $backupData | ConvertTo-Json | Set-Content -Path $backupFile -Force
+    ConvertTo-Json -InputObject $backupData -Depth 3 | Set-Content -Path $backupFile -Force
     Write-Host "=== Backup saved: $backupFile ===" -ForegroundColor Green
 }
 else {
@@ -48,6 +49,8 @@ else {
         $val = $backupData.$name
         if ($null -eq $val) {
             & $injector --write $EndpointGuid $name delete
+        } elseif ($val -is [array]) {
+            & $injector --write $EndpointGuid $name msz ($val -join '|')
         } elseif ($val -is [int] -or $val -is [long]) {
             & $injector --write $EndpointGuid $name dword $val
         } else {
