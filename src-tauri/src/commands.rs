@@ -7,44 +7,6 @@ use crate::playback::manager::{PlaybackManager, PlaybackStatus};
 use crate::drop::scan::FileSystemScanner;
 use crate::security::SecurityManager;
 
-#[repr(C)]
-struct ApoLiveDiagnostics {
-    magic: u32,
-    struct_version: u32,
-    instantiated: u32,
-    format_valid: u32,
-    seq_lock: i32,
-    lock_calls: i32,
-    initialize_calls: i64,
-    process_calls: i64,
-    processed_frames: i64,
-    loaded_revision: i64,
-    sample_rate: u32,
-    channels: u32,
-    is_hardcoded_baseline: u32,
-    reserved: u32,
-}
-
-#[cfg(target_os = "windows")]
-mod win32_mem {
-    use std::ffi::c_void;
-    pub type Handle = *mut c_void;
-    pub type Bool = i32;
-    pub type Dword = u32;
-    pub type Lpcwstr = *const u16;
-    pub type SizeT = usize;
-
-    pub const FILE_MAP_READ: Dword = 0x0004;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        pub fn OpenFileMappingW(dwDesiredAccess: Dword, bInheritHandle: Bool, lpName: Lpcwstr) -> Handle;
-        pub fn MapViewOfFile(hFileMappingObject: Handle, dwDesiredAccess: Dword, dwFileOffsetHigh: Dword, dwFileOffsetLow: Dword, dwNumberOfBytesToMap: SizeT) -> *mut c_void;
-        pub fn UnmapViewOfFile(lpBaseAddress: *const c_void) -> Bool;
-        pub fn CloseHandle(hObject: Handle) -> Bool;
-    }
-}
-
 #[tauri::command]
 pub fn detect_audio_hardware_devices() -> Result<Vec<String>, String> {
     Ok(vec![
@@ -53,15 +15,37 @@ pub fn detect_audio_hardware_devices() -> Result<Vec<String>, String> {
     ])
 }
 
+// Master config staged in memory only; written to disk solely as the encrypted,
+// ACL-locked config.dvr when the developer presses Lock (enforce_global_hardware_apo).
+static STAGED_PROFILE: Mutex<Option<String>> = Mutex::new(None);
+static PROFILE_LOCKED: Mutex<bool> = Mutex::new(false);
+
 #[tauri::command]
-pub fn upload_apo_profile(profile_data: String, _is_enabled: bool, _manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
-    let config_dir = Path::new("C:\\ProgramData\\Diviora");
-    if !config_dir.exists() {
-        let _ = fs::create_dir_all(config_dir);
+pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+    if profile_data == "REMOVE" || !is_enabled {
+        if profile_data == "REMOVE" {
+            *STAGED_PROFILE.lock().unwrap() = None;
+        }
+        // Encrypted empty config = APO passes audio through unchanged.
+        crate::apo_config::write_locked_config("")?;
+        return Ok("System processing disabled (pass-through).".to_string());
     }
-    let target_file = config_dir.join("active.txt");
-    fs::write(&target_file, &profile_data).map_err(|e| e.to_string())?;
-    Ok(format!("Profile loaded to staging: {} bytes", profile_data.len()))
+    let summary = diviora_dsp::eqapo::parse(&profile_data, None);
+    *STAGED_PROFILE.lock().unwrap() = Some(profile_data.clone());
+    let locked = *PROFILE_LOCKED.lock().unwrap();
+    if locked {
+        crate::apo_config::write_locked_config(&profile_data)?;
+    }
+    let mut msg = format!(
+        "Profile staged in memory: {} processing stage(s){}.",
+        summary.stages.len(),
+        if locked { ", applied system-wide" } else { "; press Lock Config to apply system-wide" }
+    );
+    if !summary.warnings.is_empty() {
+        msg.push_str(&format!(" {} line(s) not supported: {}", summary.warnings.len(),
+            summary.warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>().join("; ")));
+    }
+    Ok(msg)
 }
 
 #[tauri::command]
@@ -183,88 +167,57 @@ pub fn generate_watermark_audit_report(_manager: State<'_, Arc<Mutex<PlaybackMan
 
 #[tauri::command]
 pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
-    let config_file = Path::new("C:\\ProgramData\\Diviora\\config.txt");
-    let has_active_config = config_file.exists();
-
     let clsid = "{D1B100A1-8888-4444-9999-000000000001}";
-    let registry_path = format!("SOFTWARE\\Classes\\CLSID\\{}", clsid);
     let is_com_registered = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
-        .open_subkey(&registry_path)
+        .open_subkey(format!("SOFTWARE\\Classes\\CLSID\\{}", clsid))
         .is_ok();
+    let has_locked_config = crate::apo_config::config_path().exists();
 
-    let mut audiodg_pid = 0u32;
-    #[cfg(target_os = "windows")]
-    {
-        use std::process::Command;
-        if let Ok(output) = Command::new("tasklist").args(&["/FI", "IMAGENAME eq audiodg.exe", "/FO", "CSV", "/NH"]).output() {
-            let out_str = String::from_utf8_lossy(&output.stdout);
-            let parts: Vec<&str> = out_str.split(',').collect();
-            if parts.len() > 1 {
-                if let Ok(pid) = parts[1].trim_matches('"').trim().parse::<u32>() {
-                    audiodg_pid = pid;
-                }
-            }
-        }
-    }
+    // Written once a second by DivioraAPO.dll itself, from inside audiodg.exe.
+    let st = crate::apo_config::read_status();
+    let g = |k: &str| st.as_ref().and_then(|v| v.get(k)).and_then(|v| v.as_i64()).unwrap_or(0);
+    let process = st.as_ref().and_then(|v| v.get("process")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let last_error = st.as_ref().and_then(|v| v.get("last_error")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let config_loaded = st.as_ref().and_then(|v| v.get("config_loaded")).and_then(|v| v.as_bool()).unwrap_or(false);
+    let tick_ms = g("tick_ms");
+    let pid = g("pid");
+    let (process_calls, processed_frames, filtered_frames, locked) = (g("process_calls"), g("processed_frames"), g("filtered_frames"), g("locked"));
 
-    let mut apo_instantiated = false;
-    let mut init_calls = 0i64;
-    let mut lock_calls = 0i32;
-    let mut process_calls = 0i64;
-    let mut processed_frames = 0i64;
-    let mut loaded_rev = 0i64;
-    let mut format_ok = false;
+    // Fresh = file updated in the last few seconds (the APO rewrites it every second).
+    let fresh = std::fs::metadata(crate::apo_config::status_path())
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs() < 5)
+        .unwrap_or(false);
+    let in_audiodg = fresh && process.eq_ignore_ascii_case("audiodg.exe");
 
-    #[cfg(target_os = "windows")]
-    unsafe {
-        use win32_mem::*;
-
-        let map_name: Vec<u16> = "Global\\DivioraApoDiagnostics\0".encode_utf16().collect();
-        let h_map = OpenFileMappingW(FILE_MAP_READ, 0, map_name.as_ptr());
-        if !h_map.is_null() {
-            let p_view = MapViewOfFile(h_map, FILE_MAP_READ, 0, 0, std::mem::size_of::<ApoLiveDiagnostics>());
-            if !p_view.is_null() {
-                let diag = &*(p_view as *const ApoLiveDiagnostics);
-                if diag.magic == 0x44494147 {
-                    apo_instantiated = diag.instantiated == 1;
-                    init_calls = diag.initialize_calls;
-                    lock_calls = diag.lock_calls;
-                    process_calls = diag.process_calls;
-                    processed_frames = diag.processed_frames;
-                    loaded_rev = diag.loaded_revision;
-                    format_ok = diag.format_valid == 1;
-                }
-                UnmapViewOfFile(p_view);
-            }
-            CloseHandle(h_map);
-        }
-    }
-
-    let verified_audio = process_calls > 0;
-    let is_enabled = has_active_config && loaded_rev > 0;
-    let hook_status = if is_enabled {
+    let hook_status = if in_audiodg && config_loaded && filtered_frames > 0 {
         "ACTIVE"
-    } else if verified_audio {
+    } else if in_audiodg && process_calls > 0 {
         "PASSTHROUGH_ACTIVE"
+    } else if in_audiodg {
+        "LOADED_IDLE"
     } else if is_com_registered {
         "BOUND_READY"
     } else {
         "UNLINKED"
     };
-
-    let pid_str = if audiodg_pid > 0 { audiodg_pid.to_string() } else { "Offline".to_string() };
-    let msg_str = if is_enabled {
-        format!("Streaming Audio | DSP Filter Active | Frames: {}", processed_frames)
-    } else if verified_audio {
-        format!("Unity Passthrough (Native Audio) | Frames: {}", processed_frames)
-    } else {
-        "APO Bound | Waiting for Stream".to_string()
+    let pid_str = if in_audiodg { pid.to_string() } else { "Offline".to_string() };
+    let msg_str = match hook_status {
+        "ACTIVE" => format!("DivioraAPO in audiodg.exe | Locked config applied | Filtered frames: {}", filtered_frames),
+        "PASSTHROUGH_ACTIVE" => format!("DivioraAPO in audiodg.exe | Pass-through ({}) | Frames: {}", last_error, processed_frames),
+        "LOADED_IDLE" => "DivioraAPO loaded in audiodg.exe | Waiting for audio".to_string(),
+        "BOUND_READY" => "APO registered, not yet loaded by Windows audio (reboot after install, then play audio)".to_string(),
+        _ => "APO not installed".to_string(),
     };
+    let is_enabled = hook_status == "ACTIVE";
 
     Ok(serde_json::json!({
         "status": hook_status,
         "hook_status": hook_status,
         "active_status": hook_status,
+        "channel_status": msg_str,
         "is_enabled": is_enabled,
         "sync_enabled": is_enabled,
         "apo_registered": is_com_registered,
@@ -272,21 +225,17 @@ pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
         "audiodg_pid": pid_str,
         "message": msg_str,
         "status_message": msg_str,
-        "has_active_config": has_active_config,
-        "audio_processing_verified": verified_audio,
-        "apo_instantiated": apo_instantiated,
-        "initialize_calls": init_calls,
-        "lock_calls": lock_calls,
+        "has_active_config": has_locked_config,
+        "audio_processing_verified": in_audiodg && process_calls > 0,
+        "apo_instantiated": in_audiodg,
+        "lock_calls": locked,
         "process_calls": process_calls,
         "processed_frames": processed_frames,
-        "loaded_revision": loaded_rev,
-        "format_valid": format_ok,
-        "live_metrics": {
-            "peak_gain_db": 0.0,
-            "latency_ms": 0.0,
-            "cpu_usage_pct": 0.0,
-            "init_time_ms": 0.0
-        }
+        "filtered_frames": filtered_frames,
+        "loaded_revision": g("config_revision"),
+        "format_valid": g("non_float_streams") == 0,
+        "last_error": last_error,
+        "status_tick_ms": tick_ms
     }))
 }
 
@@ -327,27 +276,17 @@ pub fn get_live_amplitude_metrics(manager: State<'_, Arc<Mutex<PlaybackManager>>
 
 #[tauri::command]
 pub fn enforce_global_hardware_apo(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
-    let mgr = manager.inner();
-    let mutex_lock = mgr.lock().unwrap();
-    let mut lock = mutex_lock.is_global_apo_locked.lock().unwrap();
-    *lock = true;
-
-    let config_dir = Path::new("C:\\ProgramData\\Diviora");
-    if !config_dir.exists() {
-        let _ = fs::create_dir_all(config_dir);
+    let staged = STAGED_PROFILE.lock().unwrap().clone()
+        .ok_or_else(|| "Upload a configuration file first, then press Lock Config.".to_string())?;
+    let path = crate::apo_config::write_locked_config(&staged)?;
+    crate::apo_config::remove_legacy_plaintext();
+    *PROFILE_LOCKED.lock().unwrap() = true;
+    {
+        let mgr = manager.inner();
+        let mutex_lock = mgr.lock().unwrap();
+        *mutex_lock.is_global_apo_locked.lock().unwrap() = true;
     }
-
-    let staging_file = config_dir.join("active.txt");
-    let target_file = config_dir.join("config.txt");
-
-    if staging_file.exists() {
-        fs::copy(&staging_file, &target_file).map_err(|e| e.to_string())?;
-    } else {
-        // Default target if none uploaded
-        fs::write(&target_file, "Preamp: 0.0 dB\n").map_err(|e| e.to_string())?;
-    }
-
-    Ok("Master DSP Processing Matrix Enforced to System Storage.".to_string())
+    Ok(format!("Master configuration encrypted and locked: {} (readable only by Windows audio and Administrators).", path.display()))
 }
 
 #[tauri::command]

@@ -8,8 +8,11 @@ static const wchar_t* kFxPropsRoot = L"{D04E05A6-594B-4fb6-A80D-01AF5EED7D1D}";
 static const wchar_t* kStreamEffectSlot = L",5";
 static const wchar_t* kDisableSysFxName = L"{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5";
 
-int main() {
-    std::wcout << L"=== Diviora Single-Slot Injector (StreamEffect only) ===" << std::endl;
+int wmain(int argc, wchar_t** argv) {
+    // --print-guid: only print the default speakers' endpoint GUID and change nothing
+    // (used by install_native_apo.ps1 to take a backup before binding).
+    const bool printOnly = (argc > 1 && wcscmp(argv[1], L"--print-guid") == 0);
+    if (!printOnly) std::wcout << L"=== Diviora Single-Slot Injector (StreamEffect only) ===" << std::endl;
 
     HRESULT hr = CoInitialize(NULL);
     if (FAILED(hr)) return 1;
@@ -49,6 +52,16 @@ int main() {
     std::wstring guidStr;
     if (lastOpen != std::wstring::npos && lastClose != std::wstring::npos && lastClose > lastOpen) {
         guidStr = fullId.substr(lastOpen, lastClose - lastOpen + 1);
+    }
+
+    if (printOnly) {
+        if (pwszId) CoTaskMemFree(pwszId);
+        pDevice->Release();
+        pEnum->Release();
+        CoUninitialize();
+        if (guidStr.empty()) return 1;
+        std::wcout << guidStr << std::endl;
+        return 0;
     }
 
     bool success = false;

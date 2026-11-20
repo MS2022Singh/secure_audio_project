@@ -1,0 +1,1 @@
+Filter: ON LS 12 dB Fc 60 Hz Gain 3 dB

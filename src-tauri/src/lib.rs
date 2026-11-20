@@ -2,6 +2,7 @@ pub mod playback;
 pub mod drop;
 pub mod security;
 pub mod commands;
+pub mod apo_config;
 
 use std::sync::{Arc, Mutex};
 use tauri::Manager;

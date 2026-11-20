@@ -1,0 +1,281 @@
+//! Real-time DSP engine compiled from parsed Equalizer APO stages.
+//!
+//! `Engine::compile` allocates everything up front; `Engine::process_interleaved`
+//! does not allocate, lock or perform I/O, so it is safe to call from an audio callback.
+
+use crate::eqapo::{BiquadSpec, ChannelSel, FilterKind, Shape, Stage, MAX_CHANNELS};
+use std::f64::consts::PI;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Coefs {
+    pub b0: f64,
+    pub b1: f64,
+    pub b2: f64,
+    pub a1: f64,
+    pub a2: f64,
+}
+
+impl Coefs {
+    /// RBJ "Audio EQ Cookbook" coefficients, normalised so a0 == 1.
+    pub fn from_spec(spec: &BiquadSpec, sample_rate: f64) -> Coefs {
+        let nyq_safe = sample_rate * 0.49;
+        let f = spec.freq.min(nyq_safe);
+        let w0 = 2.0 * PI * f / sample_rate;
+        let (sn, cs) = w0.sin_cos();
+        let a = 10f64.powf(spec.gain_db / 40.0);
+        let alpha = match spec.shape {
+            Shape::Q(q) => sn / (2.0 * q),
+            Shape::SlopeDbPerOct(db) => {
+                let s = (db / 12.0).max(1e-6);
+                sn / 2.0 * ((a + 1.0 / a) * (1.0 / s - 1.0) + 2.0).max(0.0).sqrt()
+            }
+        };
+        let sa = 2.0 * a.sqrt() * alpha;
+        let (b0, b1, b2, a0, a1, a2) = match spec.kind {
+            FilterKind::Peaking => (1.0 + alpha * a, -2.0 * cs, 1.0 - alpha * a, 1.0 + alpha / a, -2.0 * cs, 1.0 - alpha / a),
+            FilterKind::LowShelf => (
+                a * ((a + 1.0) - (a - 1.0) * cs + sa),
+                2.0 * a * ((a - 1.0) - (a + 1.0) * cs),
+                a * ((a + 1.0) - (a - 1.0) * cs - sa),
+                (a + 1.0) + (a - 1.0) * cs + sa,
+                -2.0 * ((a - 1.0) + (a + 1.0) * cs),
+                (a + 1.0) + (a - 1.0) * cs - sa,
+            ),
+            FilterKind::HighShelf => (
+                a * ((a + 1.0) + (a - 1.0) * cs + sa),
+                -2.0 * a * ((a - 1.0) + (a + 1.0) * cs),
+                a * ((a + 1.0) + (a - 1.0) * cs - sa),
+                (a + 1.0) - (a - 1.0) * cs + sa,
+                2.0 * ((a - 1.0) - (a + 1.0) * cs),
+                (a + 1.0) - (a - 1.0) * cs - sa,
+            ),
+            FilterKind::LowPass => ((1.0 - cs) / 2.0, 1.0 - cs, (1.0 - cs) / 2.0, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
+            FilterKind::HighPass => ((1.0 + cs) / 2.0, -(1.0 + cs), (1.0 + cs) / 2.0, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
+            FilterKind::BandPass => (alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
+            FilterKind::Notch => (1.0, -2.0 * cs, 1.0, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
+            FilterKind::AllPass => (1.0 - alpha, -2.0 * cs, 1.0 + alpha, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
+        };
+        Coefs { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 }
+    }
+
+    /// Magnitude response in dB at `freq` (used by tests and UI previews).
+    pub fn magnitude_db(&self, freq: f64, sample_rate: f64) -> f64 {
+        let w = 2.0 * PI * freq / sample_rate;
+        let (s1, c1) = w.sin_cos();
+        let (s2, c2) = (2.0 * w).sin_cos();
+        let nr = self.b0 + self.b1 * c1 + self.b2 * c2;
+        let ni = -(self.b1 * s1 + self.b2 * s2);
+        let dr = 1.0 + self.a1 * c1 + self.a2 * c2;
+        let di = -(self.a1 * s1 + self.a2 * s2);
+        10.0 * ((nr * nr + ni * ni) / (dr * dr + di * di)).log10()
+    }
+}
+
+enum CStage {
+    Gain { lin: [f32; MAX_CHANNELS] },
+    Biquad { c: Coefs, on: [bool; MAX_CHANNELS], z: [[f64; 2]; MAX_CHANNELS] },
+    Delay { lines: Vec<Option<(Vec<f32>, usize)>> },
+    Mix { m: [[f32; MAX_CHANNELS]; MAX_CHANNELS] },
+}
+
+pub struct Engine {
+    channels: usize,
+    sample_rate: u32,
+    stages: Vec<CStage>,
+    pub revision: u64,
+}
+
+fn mask(sel: &ChannelSel, channels: usize) -> [bool; MAX_CHANNELS] {
+    let mut m = [false; MAX_CHANNELS];
+    for c in sel.indices(channels.min(MAX_CHANNELS)) {
+        m[c] = true;
+    }
+    m
+}
+
+impl Engine {
+    /// A pass-through engine.
+    pub fn bypass(sample_rate: u32, channels: usize) -> Engine {
+        Engine { channels: channels.min(MAX_CHANNELS), sample_rate, stages: Vec::new(), revision: 0 }
+    }
+
+    pub fn compile(stages: &[Stage], sample_rate: u32, channels: usize, revision: u64) -> Engine {
+        let channels = channels.clamp(1, MAX_CHANNELS);
+        let sr = sample_rate as f64;
+        let mut out = Vec::with_capacity(stages.len());
+        for s in stages {
+            match s {
+                Stage::Gain { gain_db, channels: sel } => {
+                    let g = 10f32.powf(*gain_db as f32 / 20.0);
+                    let m = mask(sel, channels);
+                    let mut lin = [1.0f32; MAX_CHANNELS];
+                    for c in 0..MAX_CHANNELS {
+                        if m[c] { lin[c] = g; }
+                    }
+                    out.push(CStage::Gain { lin });
+                }
+                Stage::Biquad { spec, channels: sel } => {
+                    out.push(CStage::Biquad { c: Coefs::from_spec(spec, sr), on: mask(sel, channels), z: [[0.0; 2]; MAX_CHANNELS] });
+                }
+                Stage::Delay { ms, channels: sel } => {
+                    let n = ((ms / 1000.0) * sr).round() as usize;
+                    if n == 0 { continue; }
+                    let m = mask(sel, channels);
+                    let lines = (0..channels).map(|c| if m[c] { Some((vec![0.0f32; n], 0usize)) } else { None }).collect();
+                    out.push(CStage::Delay { lines });
+                }
+                Stage::Mix { routes } => {
+                    let mut m = [[0.0f32; MAX_CHANNELS]; MAX_CHANNELS];
+                    for (i, row) in m.iter_mut().enumerate() { row[i] = 1.0; }
+                    for (dest, srcs) in routes {
+                        if *dest >= MAX_CHANNELS { continue; }
+                        m[*dest] = [0.0; MAX_CHANNELS];
+                        for (src, f) in srcs {
+                            if *src < MAX_CHANNELS { m[*dest][*src] += *f as f32; }
+                        }
+                    }
+                    out.push(CStage::Mix { m });
+                }
+            }
+        }
+        Engine { channels, sample_rate, stages: out, revision }
+    }
+
+    pub fn channels(&self) -> usize { self.channels }
+    pub fn sample_rate(&self) -> u32 { self.sample_rate }
+    pub fn is_bypass(&self) -> bool { self.stages.is_empty() }
+
+    /// Process interleaved samples in place. `buf.len()` must be a multiple of `channels()`.
+    pub fn process_interleaved(&mut self, buf: &mut [f32]) {
+        let n = self.channels;
+        if self.stages.is_empty() {
+            return;
+        }
+        for frame in buf.chunks_exact_mut(n) {
+            self.process_frame(frame);
+        }
+    }
+
+    #[inline]
+    pub fn process_frame(&mut self, frame: &mut [f32]) {
+        let n = frame.len().min(self.channels);
+        for st in self.stages.iter_mut() {
+            match st {
+                CStage::Gain { lin } => {
+                    for c in 0..n { frame[c] *= lin[c]; }
+                }
+                CStage::Biquad { c: k, on, z } => {
+                    for c in 0..n {
+                        if !on[c] { continue; }
+                        // Transposed direct form II, f64 state.
+                        let x = frame[c] as f64;
+                        let y = k.b0 * x + z[c][0];
+                        z[c][0] = k.b1 * x - k.a1 * y + z[c][1];
+                        z[c][1] = k.b2 * x - k.a2 * y;
+                        frame[c] = y as f32;
+                    }
+                }
+                CStage::Delay { lines } => {
+                    for c in 0..n {
+                        if let Some(Some((line, pos))) = lines.get_mut(c) {
+                            let out = line[*pos];
+                            line[*pos] = frame[c];
+                            *pos = (*pos + 1) % line.len();
+                            frame[c] = out;
+                        }
+                    }
+                }
+                CStage::Mix { m } => {
+                    let mut tmp = [0.0f32; MAX_CHANNELS];
+                    tmp[..n].copy_from_slice(&frame[..n]);
+                    for d in 0..n {
+                        let mut acc = 0.0f32;
+                        for s in 0..n { acc += m[d][s] * tmp[s]; }
+                        frame[d] = acc;
+                    }
+                }
+            }
+        }
+        // Hard safety clip so positive EQ gain can never wrap or blow speakers.
+        for s in frame[..n].iter_mut() {
+            *s = s.clamp(-1.0, 1.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eqapo::parse;
+
+    fn spec(kind: FilterKind, freq: f64, gain: f64, q: f64) -> BiquadSpec {
+        BiquadSpec { kind, freq, gain_db: gain, shape: Shape::Q(q) }
+    }
+
+    #[test]
+    fn peaking_hits_target_gain() {
+        let c = Coefs::from_spec(&spec(FilterKind::Peaking, 1000.0, -24.0, 1.41), 48000.0);
+        assert!((c.magnitude_db(1000.0, 48000.0) + 24.0).abs() < 0.01);
+        assert!(c.magnitude_db(100.0, 48000.0).abs() < 0.5);
+        assert!(c.magnitude_db(10000.0, 48000.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn shelves_and_passes() {
+        let ls = Coefs::from_spec(&spec(FilterKind::LowShelf, 100.0, 6.0, 0.707), 48000.0);
+        assert!((ls.magnitude_db(20.0, 48000.0) - 6.0).abs() < 0.3);
+        assert!(ls.magnitude_db(5000.0, 48000.0).abs() < 0.1);
+        let hp = Coefs::from_spec(&spec(FilterKind::HighPass, 1000.0, 0.0, 0.707), 48000.0);
+        assert!((hp.magnitude_db(1000.0, 48000.0) + 3.01).abs() < 0.05);
+        assert!(hp.magnitude_db(100.0, 48000.0) < -35.0);
+    }
+
+    fn sine_rms_db(engine: &mut Engine, freq: f64) -> f64 {
+        let sr = 48000.0;
+        let mut buf: Vec<f32> = (0..48000).flat_map(|i| {
+            let v = (0.5 * (2.0 * PI * freq * i as f64 / sr).sin()) as f32;
+            [v, v]
+        }).collect();
+        engine.process_interleaved(&mut buf);
+        let tail = &buf[48000..]; // skip transient
+        let rms = (tail.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / tail.len() as f64).sqrt();
+        20.0 * (rms / (0.5 / 2f64.sqrt())).log10()
+    }
+
+    #[test]
+    fn acceptance_preamp_minus_24_and_1k_notch() {
+        // The acceptance test from the design discussion: Preamp -24 dB, then a 1 kHz -24 dB peak.
+        let cfg = parse("Preamp: -24 dB", None);
+        let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 1);
+        assert!((sine_rms_db(&mut e, 440.0) + 24.0).abs() < 0.05);
+
+        let cfg = parse("Filter: ON PK Fc 1000 Hz Gain -24 dB Q 2", None);
+        let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 2);
+        assert!((sine_rms_db(&mut e, 1000.0) + 24.0).abs() < 0.2);
+        let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 2);
+        assert!(sine_rms_db(&mut e, 100.0).abs() < 0.2);
+    }
+
+    #[test]
+    fn mix_swaps_channels_and_delay_shifts() {
+        let cfg = parse("Copy: L=R R=L", None);
+        let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 1);
+        let mut f = [0.25f32, -0.5];
+        e.process_frame(&mut f);
+        assert_eq!(f, [-0.5, 0.25]);
+
+        let cfg = parse("Channel: R\nDelay: 2 samples", None);
+        let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 1);
+        let mut buf = [1.0f32, 1.0, 0.0, 0.0, 0.0, 0.0];
+        e.process_interleaved(&mut buf);
+        assert_eq!(buf, [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn bypass_is_bit_exact() {
+        let mut e = Engine::bypass(48000, 2);
+        let mut buf = [0.1f32, -0.2, 0.3, -0.4];
+        e.process_interleaved(&mut buf);
+        assert_eq!(buf, [0.1, -0.2, 0.3, -0.4]);
+    }
+}

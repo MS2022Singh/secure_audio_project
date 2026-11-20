@@ -1,0 +1,15 @@
+[package]
+name = "diviora-dsp"
+version = "0.1.0"
+edition = "2021"
+description = "Equalizer APO config parser, biquad DSP engine and CamillaDSP exporter for Diviora"
+
+[lib]
+# rlib for Rust users (Tauri app), staticlib linked into the native APO DLL.
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+
+[profile.release]
+# Never abort inside audiodg.exe: panics are caught at the FFI boundary.
+panic = "unwind"

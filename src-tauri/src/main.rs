@@ -1,10 +1,11 @@
-﻿use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 pub mod playback;
 pub mod drop;
 pub mod security;
 pub mod commands;
+pub mod apo_config;
 
 pub use playback::manager::PlaybackManager;
 

@@ -75,6 +75,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
+ "diviora-dsp",
  "diviora-dsp-core",
  "reqwest 0.11.27",
  "rodio",
@@ -86,6 +87,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "walkdir",
+ "windows-sys 0.52.0",
  "winreg 0.52.0",
 ]
 
@@ -786,6 +788,10 @@ dependencies = [
  "quote",
  "syn 3.0.3",
 ]
+
+[[package]]
+name = "diviora-dsp"
+version = "0.1.0"
 
 [[package]]
 name = "diviora-dsp-core"
