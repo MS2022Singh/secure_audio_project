@@ -141,7 +141,7 @@ STDMETHODIMP DivioraAPO::LockForProcess(UINT32 numIn, APO_CONNECTION_DESCRIPTOR*
                                         UINT32 numOut, APO_CONNECTION_DESCRIPTOR** ppOut) {
     if (numIn != 1 || numOut != 1) return APOERR_NUM_CONNECTIONS_INVALID;
     if (!ppIn || !ppIn[0] || !ppOut || !ppOut[0]) return E_POINTER;
-    if (m_locked) return APOERR_ALREADY_LOCKED;
+    if (m_locked) return APOERR_APO_LOCKED;
 
     bool isFloat = false;
     UINT32 rate = 48000, channels = 2, blockAlign = 8;
@@ -182,7 +182,7 @@ STDMETHODIMP DivioraAPO::LockForProcess(UINT32 numIn, APO_CONNECTION_DESCRIPTOR*
 
 STDMETHODIMP DivioraAPO::UnlockForProcess() {
     std::lock_guard<std::mutex> g(ConfigManager::Instance().Mutex());
-    if (!m_locked) return APOERR_NOT_LOCKED;
+    if (!m_locked) return APOERR_ALREADY_UNLOCKED;
     m_locked = false;
     FreeAllEngines();
     DivioraStats().locked--;
