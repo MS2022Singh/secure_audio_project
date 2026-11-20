@@ -74,12 +74,12 @@ if ($Uninstall) {
     } else {
         Say 'No install manifest found; endpoint values were not changed by this installer.' 'Yellow'
     }
-    Stop-Service Audiosrv -Force
     if (Test-Path $TargetDll) {
         & regsvr32.exe /u /s $TargetDll
+        Stop-Service Audiosrv -Force       # release the DLL so it can be deleted
         Remove-Item $TargetDll -Force
+        Start-Service Audiosrv
     }
-    Start-Service Audiosrv
     Say 'Uninstalled. Reboot once so Windows rebuilds the audio graph. The locked config in' 'Green'
     Say "$ApoDir is kept (encrypted); delete it as Administrator if you no longer need it."
     exit 0
@@ -106,9 +106,15 @@ New-Item -ItemType Directory -Force -Path (Split-Path $Manifest) | Out-Null
 
 try {
     Say '=== 3/5 Install and register DivioraAPO.dll ===' 'Cyan'
-    Stop-Service Audiosrv -Force   # releases a previously loaded DLL
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item (Join-Path $BuildDir 'DivioraAPO.dll') $TargetDll -Force
+    if (Test-Path $TargetDll) {
+        # A previous DivioraAPO.dll may be loaded by audiodg.exe; stop audio only for the copy.
+        Stop-Service Audiosrv -Force
+        Copy-Item (Join-Path $BuildDir 'DivioraAPO.dll') $TargetDll -Force
+        Start-Service Audiosrv
+    } else {
+        Copy-Item (Join-Path $BuildDir 'DivioraAPO.dll') $TargetDll -Force
+    }
     & icacls.exe $TargetDll /grant '*S-1-5-19:(RX)' '*S-1-15-2-1:(RX)' | Out-Null   # LOCAL SERVICE, ALL APPLICATION PACKAGES
     $p = Start-Process regsvr32.exe -ArgumentList '/s', "`"$TargetDll`"" -Wait -PassThru
     if ($p.ExitCode -ne 0) { throw "regsvr32 failed with exit code $($p.ExitCode)." }
@@ -119,9 +125,9 @@ try {
     Set-Sddl (Join-Path $ApoDir 'status') 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)(A;OICI;FR;;;BU)'
 
     Say '=== 5/5 Bind to the default speakers (stream-effect slot only) ===' 'Cyan'
+    # Windows Audio must be running here: it is what reports the default speakers.
     & (Join-Path $BuildDir 'injector_single_slot.exe')
-    if ($LASTEXITCODE -ne 0) { throw 'Binding failed.' }
-    Start-Service Audiosrv
+    if ($LASTEXITCODE -ne 0) { throw 'Binding failed (see the message above).' }
 }
 catch {
     Say "ERROR: $($_.Exception.Message)" 'Red'

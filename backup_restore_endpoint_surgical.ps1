@@ -36,15 +36,28 @@ else {
         exit 1
     }
     $backupData = Get-Content -Path $backupFile -Raw | ConvertFrom-Json
+    # FxProperties is not writable by Administrators directly; the injector adds a
+    # temporary write permission and restores the original owner/permissions afterwards.
+    $injector = Join-Path $PSScriptRoot "windows-apo\build\Release\injector_single_slot.exe"
+    if (-not (Test-Path $injector)) {
+        Write-Error "Missing $injector. Run windows-apo\build_native_apo.bat first."
+        exit 1
+    }
+    $failed = 0
     foreach ($name in $valueNames) {
         $val = $backupData.$name
-        if ($null -ne $val) {
-            Set-ItemProperty -Path $fxKey -Name $name -Value $val -Force
-            Write-Host "  [+] Restored $name = $val" -ForegroundColor Yellow
+        if ($null -eq $val) {
+            & $injector --write $EndpointGuid $name delete
+        } elseif ($val -is [int] -or $val -is [long]) {
+            & $injector --write $EndpointGuid $name dword $val
         } else {
-            Remove-ItemProperty -Path $fxKey -Name $name -ErrorAction SilentlyContinue
-            Write-Host "  [+] Removed $name (was not set originally)" -ForegroundColor Yellow
+            & $injector --write $EndpointGuid $name sz "$val"
         }
+        if ($LASTEXITCODE -ne 0) { $failed++ }
+    }
+    if ($failed -gt 0) {
+        Write-Error "$failed value(s) could not be restored."
+        exit 1
     }
     Write-Host "=== Restore complete for $EndpointGuid ===" -ForegroundColor Green
 }
