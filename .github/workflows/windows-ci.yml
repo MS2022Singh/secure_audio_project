@@ -88,9 +88,9 @@ jobs:
         run: cargo test --release
 
       - name: Build Android APK (debug-signed, installable for testing)
-        env:
-          NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
         run: |
+          export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          echo "Using NDK at $NDK_HOME"
           npm install
           npx tauri android init --ci
           npx tauri android build --apk --debug --target aarch64
