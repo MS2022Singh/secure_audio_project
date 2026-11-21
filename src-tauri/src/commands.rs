@@ -126,7 +126,7 @@ pub fn reset_client_token() -> Result<String, String> {
 
 #[tauri::command]
 pub fn verify_master_password(password: String) -> Result<bool, String> {
-    Ok(SecurityManager::verify_master_pass(&password))
+    SecurityManager::verify_master_pass(&password)
 }
 
 #[tauri::command]

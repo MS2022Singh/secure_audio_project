@@ -376,8 +376,8 @@
     <div class="modal-overlay" id="modalResetOverlay">
         <div class="modal-card">
             <h3 style="margin: 0 0 12px 0;">🔐 Password Reset Gateway</h3>
-            <p style="font-size: 12.5px; color: var(--text-muted); margin-bottom: 16px;">Enter your current developer token or RESET_BY_HWID to set a new password.</p>
-            <input type="password" id="txtResetOldPass" placeholder="Current Token (or RESET_BY_HWID)" style="margin-bottom: 10px;" />
+            <p style="font-size: 12.5px; color: var(--text-muted); margin-bottom: 16px;">First time: leave "Current password" empty to create the developer password. Later: enter the current password or your recovery key.</p>
+            <input type="password" id="txtResetOldPass" placeholder="Current password or recovery key (empty on first setup)" style="margin-bottom: 10px;" />
             <input type="password" id="txtResetNewPass" placeholder="New Strong Master Password" style="margin-bottom: 16px;" />
             <div style="display: flex; gap: 10px; justify-content: flex-end;">
                 <button class="btn-dark" id="btnCloseResetModal">Cancel</button>
@@ -578,7 +578,9 @@
                 const res = await invokeCmd('reset_master_password', { oldPass: oldP, newPass: newP });
                 document.getElementById('lblResetStatus').style.color = "var(--primary-green)";
                 document.getElementById('lblResetStatus').innerText = "✔ " + res;
-                setTimeout(() => { document.getElementById('modalResetOverlay').style.display = 'none'; }, 1500);
+                // The recovery key is shown only once: make sure it is seen before closing.
+                alert(res);
+                document.getElementById('modalResetOverlay').style.display = 'none';
             } catch (err) {
                 document.getElementById('lblResetStatus').style.color = "var(--error-red)";
                 document.getElementById('lblResetStatus').innerText = "✖ " + err;

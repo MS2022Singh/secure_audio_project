@@ -36,7 +36,7 @@ if /i "%~1"=="canary" (set "APOFLAGS=/DDIVIORA_CANARY" & echo *** CANARY BUILD: 
 echo === 3/4 DivioraAPO.dll ===
 cl %CFLAGS% %APOFLAGS% /Iinclude src\DivioraAPO.cpp src\ConfigManager.cpp src\ClassFactory.cpp /Fobuild\Release\ ^
    /link /DLL /DEF:DivioraAPO.def /OUT:build\Release\DivioraAPO.dll ^
-   "%DSPLIB%" ole32.lib advapi32.lib crypt32.lib ntdll.lib userenv.lib ws2_32.lib dbghelp.lib
+   "%DSPLIB%" ole32.lib advapi32.lib crypt32.lib ntdll.lib userenv.lib ws2_32.lib dbghelp.lib synchronization.lib
 if errorlevel 1 goto :fail
 dumpbin /nologo /exports build\Release\DivioraAPO.dll | findstr /c:"Dll"
 dumpbin /nologo /dependents build\Release\DivioraAPO.dll | findstr /i "vcruntime msvcp" && (echo ERROR: DLL depends on the VC++ runtime & goto :fail)

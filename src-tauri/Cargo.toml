@@ -15,6 +15,8 @@ rodio = "0.17"
 walkdir = "2.4"
 sysinfo = "0.30"
 sha2 = "0.10"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+getrandom = "0.2"
 chrono = "0.4"
 reqwest = { version = "0.11", features = ["blocking"] }
 dirs = "5.0"
