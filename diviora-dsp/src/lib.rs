@@ -5,6 +5,7 @@
 //! * [`camilla`] – export them as CamillaDSP YAML.
 //! * [`ffi`]     – C ABI for the native Windows APO.
 
+pub mod analysis;
 pub mod camilla;
 pub mod engine;
 pub mod eqapo;

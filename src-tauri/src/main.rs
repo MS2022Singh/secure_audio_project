@@ -48,7 +48,9 @@ fn main() {
             commands::authenticate_user_session,
             commands::upload_signature,
             commands::toggle_watermark,
-            commands::verify_watermark_presence
+            commands::verify_watermark_presence,
+            commands::verify_watermark_in_file,
+            commands::analyze_apo_profile
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

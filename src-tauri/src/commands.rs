@@ -1,4 +1,5 @@
 use std::fs;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
@@ -62,6 +63,90 @@ fn applied_note(applied: bool) -> &'static str {
     if applied { " Applied system-wide." } else { " Press Lock Config to apply system-wide." }
 }
 
+
+// ---------------------------------------------------------------- shared helpers
+const MAX_DECODE_SECONDS: usize = 20 * 60;
+
+/// Decode WAV/MP3/FLAC/OGG to interleaved f32 (at most 20 minutes).
+fn decode_audio_file(path: &str) -> Result<(Vec<f32>, u32, u16), String> {
+    use rodio::Source;
+    let f = fs::File::open(path).map_err(|e| format!("Cannot open {}: {}", path, e))?;
+    let dec = rodio::Decoder::new(std::io::BufReader::new(f))
+        .map_err(|_| "Not a supported audio file (WAV, MP3, FLAC or OGG).".to_string())?;
+    let ch = dec.channels().max(1);
+    let sr = dec.sample_rate().max(1);
+    let max = sr as usize * ch as usize * MAX_DECODE_SECONDS;
+    let samples: Vec<f32> = dec.take(max).map(|x: i16| x as f32 / 32768.0).collect();
+    if samples.is_empty() {
+        return Err("The audio file contains no samples.".into());
+    }
+    Ok((samples, sr, ch))
+}
+
+fn current_track(manager: &State<'_, Arc<Mutex<PlaybackManager>>>) -> String {
+    let mgr = manager.inner().lock().unwrap();
+    let p = mgr.current_track_path.lock().unwrap().clone();
+    p
+}
+
+/// Tone-mode watermark detection on a file, with the current Signature ID and carrier.
+fn detect_watermark_in_file(path: &str) -> Result<serde_json::Value, String> {
+    let (samples, sr, ch) = decode_audio_file(path)?;
+    let mono: Vec<f32> = samples.chunks(ch as usize).map(|f| f.iter().sum::<f32>() / ch as f32).collect();
+    let (id, freq, clip) = {
+        let wm = watermark_state().lock().unwrap();
+        (wm.spec.id.clone(), wm.spec.freq, wm.spec.clip.is_some())
+    };
+    let d = diviora_dsp::watermark::detect(&mono, sr, freq, &id);
+    Ok(serde_json::json!({
+        "file": path,
+        "signature_id": id,
+        "carrier_hz": freq,
+        "detected": d.found,
+        "score": d.score,
+        "at_seconds": d.at_seconds,
+        "note": if clip { "An uploaded watermark clip is active; detection checks the frequency signature only." } else { "" }
+    }))
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(data);
+    format!("{:x}", h.finalize())
+}
+
+fn desktop_file(name: &str) -> PathBuf {
+    dirs::desktop_dir().unwrap_or_else(std::env::temp_dir).join(name)
+}
+
+/// Repository root (developer machine running from source), if any.
+fn find_repo_root() -> Option<PathBuf> {
+    let mut starts = vec![];
+    if let Ok(c) = std::env::current_dir() { starts.push(c); }
+    if let Ok(e) = std::env::current_exe() { if let Some(d) = e.parent() { starts.push(d.to_path_buf()); } }
+    for s in starts {
+        let mut p = Some(s.as_path());
+        while let Some(dir) = p {
+            if dir.join(".git").exists() && dir.join("windows-installer").exists() { return Some(dir.to_path_buf()); }
+            p = dir.parent();
+        }
+    }
+    None
+}
+
+/// install_native_apo.ps1 next to the installed app (resources) or in the source tree.
+fn find_installer_script() -> Option<PathBuf> {
+    let mut candidates = vec![];
+    if let Ok(e) = std::env::current_exe() {
+        if let Some(d) = e.parent() {
+            candidates.push(d.join("windows-installer").join("install_native_apo.ps1"));
+            candidates.push(d.join("resources").join("windows-installer").join("install_native_apo.ps1"));
+        }
+    }
+    if let Some(r) = find_repo_root() { candidates.push(r.join("windows-installer").join("install_native_apo.ps1")); }
+    candidates.into_iter().find(|p| p.exists())
+}
+
 #[tauri::command]
 pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
     if profile_data == "REMOVE" || !is_enabled {
@@ -87,6 +172,17 @@ pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: Stat
             summary.warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>().join("; ")));
     }
     Ok(msg)
+}
+
+/// Measured "Estimated properties" for the uploaded configuration.
+#[tauri::command]
+pub fn analyze_apo_profile(sample_rate: Option<u32>, channels: Option<u32>, device: Option<String>) -> Result<serde_json::Value, String> {
+    let text = STAGED_PROFILE.lock().unwrap().clone().unwrap_or_default();
+    let a = diviora_dsp::analysis::analyze(&text, sample_rate.unwrap_or(48000), channels.unwrap_or(2) as usize, device.as_deref());
+    Ok(serde_json::json!({
+        "peak_gain_db": a.peak_gain_db, "peak_freq_hz": a.peak_freq_hz, "latency_ms": a.latency_ms,
+        "init_ms": a.init_ms, "cpu_percent": a.cpu_percent, "stages": a.stages, "warnings": a.warnings
+    }))
 }
 
 #[tauri::command]
@@ -140,19 +236,57 @@ pub fn generate_invite_token(days_valid: u32) -> Result<String, String> {
     Ok(format!("DIVIORA-FREE-PASS-{}-{}", timestamp, days_valid))
 }
 
+/// Developer machines only: commit and push the project (never force-push).
 #[tauri::command]
 pub fn sync_project_to_github(commit_msg: String) -> Result<String, String> {
-    Ok(format!("Synced commit: {}", commit_msg))
+    let root = find_repo_root().ok_or_else(|| "Not running from a project checkout: Git sync is a developer-machine feature.".to_string())?;
+    let run = |args: &[&str]| -> Result<String, String> {
+        let o = std::process::Command::new("git").args(args).current_dir(&root).output()
+            .map_err(|e| format!("git not available: {}", e))?;
+        let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+        if o.status.success() { Ok(text) } else { Err(format!("git {} failed:\n{}", args.join(" "), text)) }
+    };
+    let msg = if commit_msg.trim().is_empty() { "Diviora update".to_string() } else { commit_msg };
+    run(&["add", "-A"])?;
+    let commit = match run(&["commit", "-m", &msg]) {
+        Ok(t) => t,
+        Err(e) if e.contains("nothing to commit") => "Nothing new to commit.".to_string(),
+        Err(e) => return Err(e),
+    };
+    let push = run(&["push", "-u", "origin", "HEAD"])?;
+    Ok(format!("{}\n{}", commit.trim(), push.trim()))
 }
 
 #[tauri::command]
 pub fn export_processed_audio_file(source_path: String, _manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
-    Ok(format!("Exported: {}", source_path))
+    let (mut samples, sr, ch) = decode_audio_file(&source_path)?;
+    let payload = compose_apo_payload();
+    let stages = diviora_dsp::analysis::process_file_samples(&payload, &mut samples, sr, ch as usize);
+    let stem = std::path::Path::new(&source_path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "track".into());
+    let out = desktop_file(&format!("{}_DIVIORA_PROCESSED.wav", stem));
+    fs::write(&out, diviora_dsp::analysis::wav_f32(&samples, sr, ch)).map_err(|e| format!("Cannot write {}: {}", out.display(), e))?;
+    let wm = watermark_state().lock().unwrap().active;
+    Ok(format!(
+        "{} ({} stage(s) applied{}, {:.1} s, {} Hz, {} ch)",
+        out.display(), stages, if wm { ", watermark embedded" } else { "" },
+        samples.len() as f64 / (sr as f64 * ch as f64), sr, ch
+    ))
 }
 
+/// Install or repair the system-wide APO (asks for administrator rights).
 #[tauri::command]
 pub fn export_cpp_apo_bootstrap_script() -> Result<String, String> {
-    Ok("sAPO Bootstrap Script Exported.".to_string())
+    let script = find_installer_script()
+        .ok_or_else(|| "install_native_apo.ps1 not found next to the app or in the project folder.".to_string())?;
+    let arg = format!(
+        "Start-Process powershell -Verb RunAs -ArgumentList '-NoExit','-ExecutionPolicy','Bypass','-File','\"{}\"'",
+        script.display()
+    );
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &arg])
+        .spawn()
+        .map_err(|e| format!("Could not start the installer: {}", e))?;
+    Ok(format!("Installer started (approve the administrator prompt): {}", script.display()))
 }
 
 #[tauri::command]
@@ -222,15 +356,41 @@ pub fn ingest_dropped_paths(paths: Vec<String>, manager: State<'_, Arc<Mutex<Pla
     Ok(serde_json::json!({ "status": "success", "items_ingested": count }))
 }
 
+/// Report of the active configuration and the APO status. Never contains the configuration itself.
 #[tauri::command]
 pub fn generate_apo_verification_report(config_data: String) -> Result<String, String> {
-    let desktop_path = dirs::desktop_dir().unwrap_or_else(|| PathBuf::from("C:\\")).join("DIVIORA_System_Audio_Matrix_Report.txt");
-    fs::write(&desktop_path, format!("DIVIORA REPORT\nPAYLOAD:\n{}", config_data)).map_err(|e| e.to_string())?;
-    Ok(desktop_path.to_string_lossy().to_string())
+    let _ = config_data; // ignored on purpose: the report must not leak the configuration
+    let payload = compose_apo_payload();
+    let analysis = diviora_dsp::analysis::analyze(&payload, 48000, 2, None);
+    let status = crate::apo_config::read_status().map(|v| v.to_string()).unwrap_or_else(|| "no status (APO not running)".into());
+    let report = format!(
+        "DIVIORA SYSTEM AUDIO REPORT\n\
+         Generated: {}\nDevice ID: {}\n\n\
+         Configuration fingerprint (SHA-256): {}\nProcessing stages: {}\nLines not supported: {}\n\
+         Peak gain: {:.2} dB at {:.0} Hz\nLatency: {:.1} ms\n\
+         Locked config file present: {}\nWatermark active: {}\n\nAPO status (from audiodg.exe):\n{}\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), SecurityManager::generate_hwid(),
+        sha256_hex(payload.as_bytes()), analysis.stages, analysis.warnings.len(),
+        analysis.peak_gain_db, analysis.peak_freq_hz, analysis.latency_ms,
+        crate::apo_config::config_path().exists(), watermark_state().lock().unwrap().active, status
+    );
+    let path = desktop_file("DIVIORA_System_Audio_Report.txt");
+    fs::write(&path, report).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-pub fn generate_watermark_audit_report(_manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+pub fn generate_watermark_audit_report(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+    let track = current_track(&manager);
+    let detection = if track.is_empty() {
+        "No track loaded: load a processed file in the player to check it for the watermark.".to_string()
+    } else {
+        match detect_watermark_in_file(&track) {
+            Ok(v) => format!("Checked file: {}\nWatermark detected: {} (score {:.2}, at {:.1} s)",
+                track, v["detected"], v["score"].as_f64().unwrap_or(0.0), v["at_seconds"].as_f64().unwrap_or(0.0)),
+            Err(e) => format!("Checked file: {}\nCould not analyse: {}", track, e),
+        }
+    };
     let desktop_path = dirs::desktop_dir().unwrap_or_else(|| PathBuf::from("C:\\")).join("DIVIORA_Watermark_Audit_Report.txt");
     let wm = watermark_state().lock().unwrap();
     let report = format!(
@@ -238,12 +398,11 @@ pub fn generate_watermark_audit_report(_manager: State<'_, Arc<Mutex<PlaybackMan
          Active: {}\nSignature ID: {}\nCarrier: {} Hz\nAmplitude: {} ({:.1} dBFS)\n\
          Source: {}\nWindow: {} s to {} s of each stream\nInterval: {} s (0 = continuous)\nAuto (only under programme audio): {}\n\
          Locked config present: {}\n\
-         Note: this report lists the configured settings. Detection of the signature in a recording\n\
-         is done with diviora_dsp::watermark::detect (tone mode).\n",
+         \nDETECTION\n{}\n",
         wm.active, wm.spec.id, wm.spec.freq, wm.spec.amp, 20.0 * wm.spec.amp.max(1e-9).log10(),
         match &wm.spec.clip { Some(c) => format!("uploaded audio ({:.1} s)", c.len() as f64 / wm.spec.clip_rate as f64), None => "generated frequency signature".to_string() },
         wm.spec.start_s, wm.spec.end_s, wm.spec.interval_s, wm.spec.gate_on_signal,
-        crate::apo_config::config_path().exists()
+        crate::apo_config::config_path().exists(), detection
     );
     fs::write(&desktop_path, report).map_err(|e| e.to_string())?;
     Ok(desktop_path.to_string_lossy().to_string())
@@ -323,20 +482,20 @@ pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Detect the frequency-signature watermark in the currently loaded track.
 #[tauri::command]
 pub fn perform_real_watermark_fft_audit(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<serde_json::Value, String> {
-    let mgr = manager.inner();
-    let mutex_lock = mgr.lock().unwrap();
-    let watermark_active = *mutex_lock.watermark_active.lock().unwrap();
-    let range = *mutex_lock.watermark_time_range.lock().unwrap();
-    Ok(serde_json::json!({
-        "detected": watermark_active,
-        "spectral_variance_db": if watermark_active { -68.4 } else { -96.0 },
-        "signature_bytes": 0,
-        "time_start": range.0,
-        "time_end": range.1,
-        "status_text": if watermark_active { format!("DSSS Active [{}s - {}s]", range.0, range.1) } else { "Watermark Unloaded".to_string() }
-    }))
+    let path = current_track(&manager);
+    if path.is_empty() {
+        return Err("Load an audio file (for example a downloaded processed file) first.".into());
+    }
+    detect_watermark_in_file(&path)
+}
+
+/// Watermark detection on any audio file.
+#[tauri::command]
+pub fn verify_watermark_in_file(path: String) -> Result<serde_json::Value, String> {
+    detect_watermark_in_file(&path)
 }
 
 #[tauri::command]
@@ -435,10 +594,9 @@ pub fn toggle_watermark(active: bool, manager: State<'_, Arc<Mutex<PlaybackManag
 
 #[tauri::command]
 pub fn verify_watermark_presence(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<bool, String> {
-    let mgr = manager.inner();
-    let mutex_lock = mgr.lock().unwrap();
-    let res = *mutex_lock.watermark_active.lock().unwrap();
-    Ok(res)
+    let path = current_track(&manager);
+    if path.is_empty() { return Ok(false); }
+    Ok(detect_watermark_in_file(&path)?.get("detected").and_then(|v| v.as_bool()).unwrap_or(false))
 }
 
 #[tauri::command]

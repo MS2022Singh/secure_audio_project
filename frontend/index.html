@@ -196,7 +196,7 @@
                             </div>
                             <div>
                                 <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 4px;">Resolution:</label>
-                                <input type="number" id="numResolution" value="8388608" oninput="updateDynamicEstimatedProperties()" placeholder="Custom resolution (e.g. 8388608)" />
+                                <input type="number" id="numResolution" value="8388608" placeholder="Custom resolution (e.g. 8388608)" />
                             </div>
                         </div>
 
@@ -221,9 +221,9 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
                         <span style="font-size: 13.5px; color: #ddd;">Active target driver configuration matrices synchronization:</span>
                         <div style="display: flex; align-items: center; gap: 10px;">
-                            <span id="lblApoToggleStatus" style="color: var(--primary-green); font-weight: 800; font-size: 13px;">ENABLED</span>
+                            <span id="lblApoToggleStatus" style="color: var(--error-red); font-weight: 800; font-size: 13px;">DISABLED</span>
                             <label class="switch">
-                                <input type="checkbox" id="toggleApoEnableConfig" checked>
+                                <input type="checkbox" id="toggleApoEnableConfig">
                                 <span class="slider"></span>
                             </label>
                         </div>
@@ -239,19 +239,19 @@
                     <input type="file" id="apoFileHiddenLoader" style="display:none;" accept=".txt,.apo" />
                     
                     <div id="lblApoSyncStatus" style="color:var(--primary-green); font-weight:700; font-size: 13px; margin-bottom: 4px;">
-                        ✔ [NATIVE SYSTEM SYNCED] Diviora Psychoacoustic Matrix is live on disk.
+                        ● No configuration uploaded yet.
                     </div>
                     <div id="lblApoScriptStatus" style="color: var(--purple-text); font-weight: 700; font-size: 13px; margin-bottom: 16px;">
-                        ✔ Native C++ Matrix Hook Deployed & audiodg.exe Reset Complete
+                        ● Upload a configuration file, then press Lock Config.
                     </div>
 
                     <div id="boxDllTelemetry" class="telemetry-bar">
-                        • AUDIODG HOOK STATUS: ACTIVE &nbsp;|&nbsp; PID: 28352 &nbsp;|&nbsp; Hardware Intercept Hooked [audiodg.exe]
+                        • AUDIODG HOOK STATUS: checking…
                     </div>
 
                     <div style="display: flex; gap: 12px; margin-top: 18px;">
                         <button class="btn-outline-green" id="btnDownloadApoReport">📄 Download Hardware Matrix Report (.txt)</button>
-                        <button class="btn-outline-green" id="btnExportPs1Script">🛠️ Generate Native C++ Installer Script (.ps1)</button>
+                        <button class="btn-outline-green" id="btnExportPs1Script">🛠️ Install / Repair System-Wide APO</button>
                     </div>
                 </div>
 
@@ -423,20 +423,17 @@
             input.style.display = sel.includes('Custom') ? 'block' : 'none';
         }
 
-        // Dynamic Non-Dummy Calculation for Estimated Properties
-        function updateDynamicEstimatedProperties() {
-            const resVal = parseInt(document.getElementById('numResolution').value) || 8388608;
-            const sampleRate = 48000;
-            
-            // Latency = (Resolution / (2 * SampleRate)) * 1000
-            const latencyMs = ((resVal / (2 * sampleRate)) * 1000).toFixed(1);
-            const latencySec = (latencyMs / 1000).toFixed(2);
-            const initTimeMs = (1.1 * (resVal / 8388608)).toFixed(1);
-            const cpuUsage = (0.1 + (resVal / 8388608) * 0.2).toFixed(1);
-
-            document.getElementById('valLatency').innerText = `${latencyMs} ms (${latencySec} s.)`;
-            document.getElementById('valInitTime').innerText = `${initTimeMs} ms`;
-            document.getElementById('valCpuUsage').innerText = `${cpuUsage} % (one core)`;
+        // Estimated properties, measured by the backend on the uploaded configuration
+        // (peak gain of the filter chain, added latency, compile time, CPU per core).
+        async function updateDynamicEstimatedProperties() {
+            try {
+                const a = await invokeCmd('analyze_apo_profile', { sampleRate: 48000, channels: 2, device: null });
+                document.getElementById('valPeakGain').innerText = `${a.peak_gain_db.toFixed(1)} dB` + (a.stages ? ` (at ${Math.round(a.peak_freq_hz)} Hz)` : '');
+                document.getElementById('valLatency').innerText = `${a.latency_ms.toFixed(1)} ms (${(a.latency_ms / 1000).toFixed(2)} s.)`;
+                document.getElementById('valInitTime').innerText = `${a.init_ms.toFixed(1)} ms`;
+                document.getElementById('valCpuUsage').innerText = `${a.cpu_percent.toFixed(2)} % (one core)`;
+                return a;
+            } catch (e) { return null; }
         }
 
         // Auto-Detect Hardware Devices on Launch
@@ -463,32 +460,24 @@
             }
         });
 
-        // Apply Analysis Settings
+        // Apply Analysis Settings: refresh the measured properties for the chosen device/channel.
+        // (Like Equalizer APO's analysis panel, these settings do not change the processing.)
         document.getElementById('btnApplyAnalysisSettings').addEventListener('click', async () => {
-            const startFrom = document.getElementById('selStartFrom').value;
-            const channel = document.getElementById('selChannelSelect').value;
-            const res = document.getElementById('numResolution').value;
-            const device = document.getElementById('selDetectedDevices').value;
-            let chConfig = document.getElementById('selChannelConfig').value;
-            if (chConfig.includes('Custom')) {
-                chConfig = document.getElementById('txtCustomChannelArray').value || chConfig;
-            }
-
-            activeApoProfilePayload = `StartFrom: ${startFrom}\nChannel: ${channel}\nFFTResolution: ${res}\nDevice: ${device}\nChannelConfig: ${chConfig}\n`;
-            const resMsg = await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: true });
-            document.getElementById('toggleApoEnableConfig').checked = true;
-            document.getElementById('lblApoToggleStatus').innerText = "ENABLED";
-            document.getElementById('lblApoToggleStatus').style.color = "var(--primary-green)";
-            alert(`Master Processing Matrix Applied System-Wide.\nStatus: ${resMsg}`);
+            const a = await updateDynamicEstimatedProperties();
+            if (!a) { alert("Analysis failed."); return; }
+            const note = a.stages ? `${a.stages} processing stage(s) analysed.` : "No configuration uploaded yet: values are for pass-through.";
+            alert(`Analysis updated. ${note}` + (a.warnings.length ? `\nNot supported: ${a.warnings.length} line(s).` : ""));
         });
 
-        // Disable Analysis Settings
+        // Disable Matrix: equalizer off (pass-through); the uploaded file is kept.
         document.getElementById('btnDisableAnalysisSettings').addEventListener('click', async () => {
-            await invokeCmd('upload_apo_profile', { profileData: "REMOVE", isEnabled: false });
-            document.getElementById('toggleApoEnableConfig').checked = false;
-            document.getElementById('lblApoToggleStatus').innerText = "DISABLED";
-            document.getElementById('lblApoToggleStatus').style.color = "var(--error-red)";
-            alert("Master Processing Matrix Bypassed System-Wide.");
+            try {
+                const msg = await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload || "REMOVE", isEnabled: false });
+                document.getElementById('toggleApoEnableConfig').checked = false;
+                document.getElementById('lblApoToggleStatus').innerText = "DISABLED";
+                document.getElementById('lblApoToggleStatus').style.color = "var(--error-red)";
+                alert(msg);
+            } catch (err) { alert("Could not disable: " + err); }
         });
 
         // TAURI NATIVE DRAG & DROP
@@ -714,9 +703,9 @@
             document.getElementById('lblApoToggleStatus').style.color = isEnabled ? "var(--primary-green)" : "var(--error-red)";
             
             if (isEnabled) {
-                document.getElementById('lblApoSyncStatus').innerText = "✔ [NATIVE SYSTEM SYNCED] " + activeApoFileName + " is live on disk.";
+                document.getElementById('lblApoSyncStatus').innerText = "✔ " + activeApoFileName + " loaded (held in memory; press Lock Config to apply system-wide).";
                 document.getElementById('lblApoSyncStatus').style.color = "var(--primary-green)";
-                document.getElementById('lblApoScriptStatus').innerText = "✔ Native C++ Matrix Hook Deployed & audiodg.exe Reset Complete";
+                document.getElementById('lblApoScriptStatus').innerText = "● Waiting for Lock Config";
                 document.getElementById('lblApoScriptStatus').style.color = "var(--purple-text)";
             } else {
                 document.getElementById('lblApoSyncStatus').innerText = "● # DIVIORA SYSTEM-WIDE MATRIX (BYPASSED / DISABLED)";
@@ -764,7 +753,7 @@
             }
             try {
                 const exportPath = await invokeCmd('export_processed_audio_file', { sourcePath: currentLoadedTrackPath });
-                alert("Audio exported cleanly to Desktop:\n" + exportPath);
+                alert("Processed audio saved:\n" + exportPath);
             } catch (err) {
                 alert("Export failed: " + err);
             }
@@ -776,13 +765,14 @@
             const file = e.target.files[0]; if (!file) return;
             activeApoProfilePayload = await file.text();
             activeApoFileName = file.name;
+            setTimeout(updateDynamicEstimatedProperties, 300);
             await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: true });
             document.getElementById('toggleApoEnableConfig').checked = true;
             document.getElementById('lblApoToggleStatus').innerText = "ENABLED";
             document.getElementById('lblApoToggleStatus').style.color = "var(--primary-green)";
-            document.getElementById('lblApoSyncStatus').innerText = "✔ [NATIVE SYSTEM SYNCED] " + activeApoFileName + " is live on disk.";
+            document.getElementById('lblApoSyncStatus').innerText = "✔ " + activeApoFileName + " loaded (held in memory; press Lock Config to apply system-wide).";
             document.getElementById('lblApoSyncStatus').style.color = "var(--primary-green)";
-            document.getElementById('lblApoScriptStatus').innerText = "✔ Native C++ Matrix Hook Deployed & audiodg.exe Reset Complete";
+            document.getElementById('lblApoScriptStatus').innerText = "● Waiting for Lock Config";
             document.getElementById('lblApoScriptStatus').style.color = "var(--purple-text)";
             document.getElementById('btnRemoveApoFile').style.display = "inline-block";
         });
@@ -805,13 +795,8 @@
             try {
                 const isEnabled = document.getElementById('toggleApoEnableConfig').checked;
                 const dllStatus = await invokeCmd('perform_real_dll_apo_audit');
-                if (isEnabled) {
-                    document.getElementById('boxDllTelemetry').innerText = `• AUDIODG HOOK STATUS: ${dllStatus.status} | PID: ${dllStatus.audiodg_pid} | ${dllStatus.channel_status}`;
-                    document.getElementById('boxDllTelemetry').style.color = "var(--primary-green)";
-                } else {
-                    document.getElementById('boxDllTelemetry').innerText = `• AUDIODG HOOK STATUS: BYPASSED | PID: ${dllStatus.audiodg_pid} | System Audio Intercept Disabled`;
-                    document.getElementById('boxDllTelemetry').style.color = "var(--text-muted)";
-                }
+                document.getElementById('boxDllTelemetry').innerText = `• AUDIODG HOOK STATUS: ${dllStatus.status} | PID: ${dllStatus.audiodg_pid} | ${dllStatus.channel_status}`;
+                document.getElementById('boxDllTelemetry').style.color = dllStatus.status === 'ACTIVE' ? "var(--primary-green)" : (isEnabled ? "var(--purple-text)" : "var(--text-muted)");
             } catch (e) {}
         }, 1000);
 
@@ -834,8 +819,8 @@
         });
 
         document.getElementById('btnExportPs1Script').addEventListener('click', async () => {
-            const status = await invokeCmd('export_cpp_apo_bootstrap_script');
-            alert(status);
+            try { alert(await invokeCmd('export_cpp_apo_bootstrap_script')); }
+            catch (err) { alert("Could not start the installer: " + err); }
         });
 
         // Lock Watermark Settings: signature, carrier, amplitude, interval, auto mode and time window.
