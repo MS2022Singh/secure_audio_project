@@ -1,4 +1,5 @@
 #include "DivioraAPO.h"
+#include "DebugLog.h"
 #include <olectl.h>  // SELFREG_E_CLASS
 #include <new>
 
@@ -33,6 +34,7 @@ public:
         if (!apo) return E_OUTOFMEMORY;
         HRESULT hr = apo->QueryInterface(riid, ppv);
         apo->Release();
+        DvrLog(L"CreateInstance -> 0x%08lx", hr);
         return hr;
     }
     STDMETHODIMP LockServer(BOOL) override { return S_OK; }
@@ -45,6 +47,13 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv) {
     if (!ppv) return E_POINTER;
     *ppv = nullptr;
     if (!IsEqualCLSID(rclsid, CLSID_DivioraAPO)) return CLASS_E_CLASSNOTAVAILABLE;
+    wchar_t exe[MAX_PATH] = L"?";
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+#ifdef DIVIORA_CANARY
+    DvrLog(L"DllGetClassObject in %s (CANARY build: always -12 dB)", exe);
+#else
+    DvrLog(L"DllGetClassObject in %s", exe);
+#endif
     DivioraClassFactory* f = new (std::nothrow) DivioraClassFactory();
     if (!f) return E_OUTOFMEMORY;
     HRESULT hr = f->QueryInterface(riid, ppv);

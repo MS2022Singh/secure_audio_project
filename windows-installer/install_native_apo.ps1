@@ -19,7 +19,7 @@
         powershell -ExecutionPolicy Bypass -File windows-installer\install_native_apo.ps1 -Verify
         powershell -ExecutionPolicy Bypass -File windows-installer\install_native_apo.ps1 -Uninstall
 #>
-param([switch]$Verify, [switch]$Uninstall, [switch]$Diagnose, [string]$TestConfig, [switch]$ClearConfig)
+param([switch]$Verify, [switch]$Uninstall, [switch]$Diagnose, [string]$TestConfig, [switch]$ClearConfig, [switch]$Canary)
 $ErrorActionPreference = 'Stop'
 
 $Root       = Split-Path -Parent $PSScriptRoot
@@ -172,11 +172,15 @@ foreach ($f in 'DivioraAPO.dll', 'apo_selftest.exe', 'injector_single_slot.exe')
 }
 
 Say '=== 1/5 Self-test (no system changes) ===' 'Cyan'
-Push-Location $BuildDir
-& .\apo_selftest.exe
-$selftest = $LASTEXITCODE
-Pop-Location
-if ($selftest -ne 0) { throw 'Self-test failed. Nothing was installed.' }
+if ($Canary) {
+    Say '  Skipped: CANARY build (always -12 dB) cannot pass the level checks. Diagnostic use only.' 'Yellow'
+} else {
+    Push-Location $BuildDir
+    & .\apo_selftest.exe
+    $selftest = $LASTEXITCODE
+    Pop-Location
+    if ($selftest -ne 0) { throw 'Self-test failed. Nothing was installed.' }
+}
 
 Say '=== 2/5 Backup of the default speakers ===' 'Cyan'
 Ensure-AudioRunning

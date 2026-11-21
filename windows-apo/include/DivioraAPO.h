@@ -63,6 +63,7 @@ private:
     bool m_registered;              // registered with ConfigManager
     bool m_locked;                  // guarded by ConfigManager mutex
     bool m_formatIsFloat32;
+    bool m_loggedFirstProcess;      // audio thread only
     UINT32 m_sampleRate;
     UINT32 m_channels;
     UINT32 m_bytesPerFrame;         // nBlockAlign of the locked format

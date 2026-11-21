@@ -1,5 +1,6 @@
 #include "DivioraAPO.h"
 #include "ConfigManager.h"
+#include "DebugLog.h"
 #include <cstring>
 
 // "Switch to pass-through" marker for the engine hand-off (dvr_engine_create returns
@@ -21,7 +22,7 @@ static const GUID kSubtypeIeeeFloat =
 
 DivioraAPO::DivioraAPO()
     : m_cRef(1), m_registered(false), m_locked(false), m_formatIsFloat32(false),
-      m_sampleRate(48000), m_channels(2), m_bytesPerFrame(8), m_pending(nullptr), m_active(nullptr), m_retired(nullptr) {}
+      m_loggedFirstProcess(false), m_sampleRate(48000), m_channels(2), m_bytesPerFrame(8), m_pending(nullptr), m_active(nullptr), m_retired(nullptr) {}
 
 DivioraAPO::~DivioraAPO() {
     if (m_registered) {
@@ -107,6 +108,9 @@ STDMETHODIMP DivioraAPO::Initialize(UINT32 cbDataSize, BYTE* pbyData) {
             PropVariantClear(&v);
         }
     }
+    DvrLog(L"Initialize this=%p cbDataSize=%u cbSize=%u discoveryOnly=%d device='%s'",
+           this, cbDataSize, (pbyData && cbDataSize >= sizeof(APOInitBaseStruct)) ? reinterpret_cast<APOInitBaseStruct*>(pbyData)->cbSize : 0,
+           discoveryOnly ? 1 : 0, m_deviceName.c_str());
     if (!discoveryOnly && !m_registered) {
         ConfigManager::Instance().Register(this);
         m_registered = true;
@@ -117,6 +121,12 @@ STDMETHODIMP DivioraAPO::Initialize(UINT32 cbDataSize, BYTE* pbyData) {
 STDMETHODIMP DivioraAPO::IsInputFormatSupported(IAudioMediaType* pOpposite, IAudioMediaType* pRequested,
                                                 IAudioMediaType** ppSupported) {
     UNREFERENCED_PARAMETER(pOpposite);
+    static std::atomic<int> logged{0};
+    if (logged.fetch_add(1) < 8) {
+        const WAVEFORMATEX* w = pRequested ? pRequested->GetAudioFormat() : nullptr;
+        DvrLog(L"IsFormatSupported this=%p tag=0x%x ch=%u rate=%u bits=%u",
+               this, w ? w->wFormatTag : 0, w ? w->nChannels : 0, w ? w->nSamplesPerSec : 0, w ? w->wBitsPerSample : 0);
+    }
     if (!pRequested || !ppSupported) return E_POINTER;
     // In-place pass-through of whatever the engine negotiates; non-float formats are
     // passed through untouched (see LockForProcess).
@@ -177,6 +187,9 @@ STDMETHODIMP DivioraAPO::LockForProcess(UINT32 numIn, APO_CONNECTION_DESCRIPTOR*
     st.last_sample_rate = static_cast<LONG>(rate);
     st.last_channels = static_cast<LONG>(channels);
     if (!m_formatIsFloat32) st.non_float_streams++;
+    DvrLog(L"LockForProcess this=%p rate=%u ch=%u blockAlign=%u float32=%d engine=%s",
+           this, rate, channels, blockAlign, m_formatIsFloat32 ? 1 : 0,
+           m_active && m_active != kBypassEngine ? L"filters" : L"pass-through");
     return S_OK;
 }
 
@@ -186,6 +199,7 @@ STDMETHODIMP DivioraAPO::UnlockForProcess() {
     m_locked = false;
     FreeAllEngines();
     DivioraStats().locked--;
+    DvrLog(L"UnlockForProcess this=%p", this);
     return S_OK;
 }
 
@@ -201,6 +215,11 @@ STDMETHODIMP_(void) DivioraAPO::APOProcess(UINT32 numIn, APO_CONNECTION_PROPERTY
     auto* in = reinterpret_cast<float*>(ppIn[0]->pBuffer);
     auto* out = reinterpret_cast<float*>(ppOut[0]->pBuffer);
     if (!in || !out) return;
+    if (!m_loggedFirstProcess) {
+        m_loggedFirstProcess = true;   // one message per instance, not per buffer
+        DvrLog(L"APOProcess first buffer this=%p frames=%u flags=%u inplace=%d", this, frames,
+               (unsigned)ppIn[0]->u32BufferFlags, in == out ? 1 : 0);
+    }
 
     if (ppIn[0]->u32BufferFlags == BUFFER_SILENT) {
         if (out != in) ZeroMemory(out, static_cast<size_t>(frames) * m_bytesPerFrame);
@@ -227,6 +246,10 @@ STDMETHODIMP_(void) DivioraAPO::APOProcess(UINT32 numIn, APO_CONNECTION_PROPERTY
             dvr_engine_process(m_active, out, frames, m_channels);
             st.filtered_frames.fetch_add(frames, std::memory_order_relaxed);
         }
+#ifdef DIVIORA_CANARY
+        // Diagnostic build only: always -12 dB, to hear whether audio passes through Diviora.
+        for (size_t i = 0, n = static_cast<size_t>(frames) * m_channels; i < n; ++i) out[i] *= 0.25f;
+#endif
     }
     st.processed_frames.fetch_add(frames, std::memory_order_relaxed);
     ppOut[0]->u32ValidFrameCount = frames;

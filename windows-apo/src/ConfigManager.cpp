@@ -1,5 +1,6 @@
 #include "ConfigManager.h"
 #include "DivioraAPO.h"
+#include "DebugLog.h"
 #include <wincrypt.h>
 #include <cstdio>
 #include <thread>
@@ -66,6 +67,7 @@ void ConfigManager::EnsureThread() {
 }
 
 void ConfigManager::ThreadMain() {
+    DvrLog(L"Config watcher started: %s", m_configPath.c_str());
     HANDLE hChange = INVALID_HANDLE_VALUE;
     for (;;) {
         if (hChange == INVALID_HANDLE_VALUE) {
@@ -155,6 +157,8 @@ bool ConfigManager::ReloadIfChanged() {
     m_lastSize = size;
     m_lastWrite = fad.ftLastWriteTime;
     m_lastError = error.empty() ? L"none" : error;
+    DvrLog(L"Config reload: %u bytes on disk, %u bytes of config text, error=%s",
+           (unsigned)size, (unsigned)newText.size(), m_lastError.c_str());
     std::lock_guard<std::mutex> g(m_mutex);
     // On any error keep pass-through (empty text): never silence, never stale filters.
     if (!m_text.empty()) SecureZeroMemory(&m_text[0], m_text.size());
@@ -204,7 +208,9 @@ void ConfigManager::WriteStatus() {
         CloseHandle(h);
         return MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) ? ERROR_SUCCESS : GetLastError();
     };
+    DWORD prevErr = m_statusWriteError;
     m_statusWriteError = writeAtomically(m_statusPath);
+    if (m_statusWriteError != prevErr) DvrLog(L"Status write to %s: error %lu", m_statusPath.c_str(), m_statusWriteError);
     if (m_statusWriteError != ERROR_SUCCESS) {
         // Fallback so a permission problem never hides the fact that the APO is running:
         // the audio service's own temp folder (C:\Windows\ServiceProfiles\LocalService\AppData\Local\Temp).

@@ -7,6 +7,8 @@ REM                        VC++ redistributable needed inside audiodg.exe)
 REM    apo_selftest.exe    safe self-test (no registry, no audiodg)
 REM    injector_single_slot.exe  binds the APO to the default speakers' stream slot
 REM  Run from any prompt:  windows-apo\build_native_apo.bat
+REM  Diagnostic build:      windows-apo\build_native_apo.bat canary
+REM                         (always -12 dB, to hear whether audio passes through Diviora)
 REM ============================================================================
 setlocal
 cd /d "%~dp0"
@@ -28,9 +30,11 @@ if errorlevel 1 goto :fail
 if not exist build\Release mkdir build\Release
 
 set "CFLAGS=/nologo /std:c++20 /O2 /MT /EHsc /W4 /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00"
+set "APOFLAGS="
+if /i "%~1"=="canary" (set "APOFLAGS=/DDIVIORA_CANARY" & echo *** CANARY BUILD: DivioraAPO.dll always lowers volume by 12 dB ***)
 
 echo === 3/4 DivioraAPO.dll ===
-cl %CFLAGS% /Iinclude src\DivioraAPO.cpp src\ConfigManager.cpp src\ClassFactory.cpp /Fobuild\Release\ ^
+cl %CFLAGS% %APOFLAGS% /Iinclude src\DivioraAPO.cpp src\ConfigManager.cpp src\ClassFactory.cpp /Fobuild\Release\ ^
    /link /DLL /DEF:DivioraAPO.def /OUT:build\Release\DivioraAPO.dll ^
    "%DSPLIB%" ole32.lib advapi32.lib crypt32.lib ntdll.lib userenv.lib ws2_32.lib dbghelp.lib
 if errorlevel 1 goto :fail
