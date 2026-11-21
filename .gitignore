@@ -23,3 +23,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.db
+backend/test-secrets.json
+backend/test-licences.db

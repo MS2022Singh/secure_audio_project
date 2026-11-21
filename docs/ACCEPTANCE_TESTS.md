@@ -3,9 +3,12 @@
 Work through these in order. Each test names the requirement, the steps and the expected
 result. Record **Pass / Fail** and keep the notes for anything that fails.
 
-Before starting, download the latest build: on GitHub open **Actions → windows-ci →** the newest
-green run **→ Artifacts**. `native-apo-…` contains the Windows installer (`…_x64-setup.exe`);
-`diviora-android-…` contains the Android APK.
+Before starting, download the latest test build (works in any browser or phone):
+
+- Windows: https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/Diviora-Setup-windows-x64.exe
+- Android: https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/Diviora-android-arm64-test.apk
+
+Test builds aren't code-signed: on Windows click **More info → Run anyway** if SmartScreen warns.
 
 ---
 
@@ -47,7 +50,12 @@ green run **→ Artifacts**. `native-apo-…` contains the Windows installer (`�
 | C5 | Not in the original | Load the original (unprocessed) song, export the report again | `Watermark detected: false` |
 | C6 | Uploaded watermark audio | **Upload Watermark Audio** with a short WAV/MP3, lock, then download a processed file | The file contains the clip at the chosen amplitude (audible only if you raise the amplitude for testing) |
 
-## D. Licences, invites and automatic updates (needs the licence server, see backend/README.md)
+## D. Licences, invites and automatic updates
+
+For testing on one PC you don't need any hosting: start the free local server in an
+Administrator PowerShell with `powershell -ExecutionPolicy Bypass -File backend\run_test_server.ps1`
+(needs Python from python.org) and keep that window open. For D1/D2 you need two devices,
+which needs the server reachable from both; the single-PC tests (D3–D5) work with the local one.
 
 | # | Requirement | Steps | Expected |
 |---|---|---|---|
