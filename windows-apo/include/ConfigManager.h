@@ -56,5 +56,6 @@ private:
     ULONGLONG m_lastSize = ~0ULL;
     LONG64 m_revision = 0;
     std::wstring m_lastError = L"none";
+    DWORD m_statusWriteError = 0;   // last error writing the status file (0 = ok)
     std::wstring m_baseDir, m_configPath, m_statusDir, m_statusPath;
 };

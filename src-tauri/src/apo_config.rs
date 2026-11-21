@@ -1,7 +1,7 @@
 //! Encrypted, ACL-locked hand-off of the master configuration to the native APO.
 //!
 //! Layout (created on first lock; needs the app to run as Administrator):
-//!   %ProgramData%\Diviora\apo\              SYSTEM + Administrators: full, LOCAL SERVICE (audiodg): read.
+//!   %ProgramData%\Diviora\apo\              SYSTEM + Administrators: full, Windows audio (LOCAL SERVICE, app packages): read.
 //!                                            Normal users and consumers: no access at all.
 //!   %ProgramData%\Diviora\apo\config.dvr    "DVRC" + u32 version 1 + DPAPI blob (machine scope,
 //!                                            so a copied file cannot be decrypted on another PC).
@@ -16,9 +16,10 @@ pub const MAGIC: &[u8; 4] = b"DVRC";
 pub const FORMAT_VERSION: u32 = 1;
 
 // SDDL: protected DACL, inherited by files created inside.
-const APO_DIR_SDDL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LS)";
+// LS = LOCAL SERVICE (audiodg); AC / S-1-15-2-2 = (restricted) app-package identities audio components may run with.
+const APO_DIR_SDDL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LS)(A;OICI;FR;;;AC)(A;OICI;FR;;;S-1-15-2-2)";
 // audiodg (LOCAL SERVICE) may modify status files; users may read the (non-secret) status.
-const STATUS_DIR_SDDL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)(A;OICI;FR;;;BU)";
+const STATUS_DIR_SDDL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)(A;OICI;0x1301bf;;;AC)(A;OICI;0x1301bf;;;S-1-15-2-2)(A;OICI;FR;;;BU)";
 
 pub fn base_dir() -> PathBuf {
     let pd = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());

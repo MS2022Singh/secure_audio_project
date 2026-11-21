@@ -183,23 +183,33 @@ void ConfigManager::WriteStatus() {
     bool hasConfig;
     { std::lock_guard<std::mutex> g(m_mutex); hasConfig = !m_text.empty(); }
 
-    char json[1024];
+    char json[1200];
     int n = snprintf(json, sizeof(json),
         "{\"writer\":\"DivioraAPO.dll\",\"pid\":%lu,\"process\":\"%s\",\"tick_ms\":%llu,"
         "\"instances\":%ld,\"locked\":%ld,\"process_calls\":%lld,\"processed_frames\":%lld,"
         "\"filtered_frames\":%lld,\"sample_rate\":%ld,\"channels\":%ld,\"non_float_streams\":%ld,"
-        "\"config_revision\":%lld,\"config_loaded\":%s,\"last_error\":\"%s\"}\n",
+        "\"config_revision\":%lld,\"config_loaded\":%s,\"last_error\":\"%s\",\"status_dir_error\":%lu}\n",
         GetCurrentProcessId(), Narrow(exeName).c_str(), GetTickCount64(),
         st.instances.load(), st.locked.load(), st.process_calls.load(), st.processed_frames.load(),
         st.filtered_frames.load(), st.last_sample_rate.load(), st.last_channels.load(), st.non_float_streams.load(),
-        m_revision, hasConfig ? "true" : "false", Narrow(m_lastError).c_str());
+        m_revision, hasConfig ? "true" : "false", Narrow(m_lastError).c_str(), m_statusWriteError);
     if (n <= 0) return;
 
-    std::wstring tmp = m_statusPath + L".tmp";
-    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    DWORD wrote = 0;
-    WriteFile(h, json, static_cast<DWORD>(n), &wrote, nullptr);
-    CloseHandle(h);
-    MoveFileExW(tmp.c_str(), m_statusPath.c_str(), MOVEFILE_REPLACE_EXISTING);
+    auto writeAtomically = [&](const std::wstring& path) -> DWORD {
+        std::wstring tmp = path + L".tmp";
+        HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return GetLastError();
+        DWORD wrote = 0;
+        WriteFile(h, json, static_cast<DWORD>(n), &wrote, nullptr);
+        CloseHandle(h);
+        return MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) ? ERROR_SUCCESS : GetLastError();
+    };
+    m_statusWriteError = writeAtomically(m_statusPath);
+    if (m_statusWriteError != ERROR_SUCCESS) {
+        // Fallback so a permission problem never hides the fact that the APO is running:
+        // the audio service's own temp folder (C:\Windows\ServiceProfiles\LocalService\AppData\Local\Temp).
+        wchar_t tmpDir[MAX_PATH];
+        DWORD len = GetTempPathW(MAX_PATH, tmpDir);
+        if (len > 0 && len < MAX_PATH) writeAtomically(std::wstring(tmpDir) + L"diviora_apo_status.json");
+    }
 }
