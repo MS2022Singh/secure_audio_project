@@ -45,10 +45,20 @@ powershell -ExecutionPolicy Bypass -File windows-installer\install_native_apo.ps
 ```
 Run Diviora as Administrator, upload the config and press **Lock Config**. Changes apply in about one second, with no reboot. To undo everything, run `install_native_apo.ps1 -Uninstall` and then reboot.
 
+## What Windows requires (learned on the target hardware)
+
+- **COM aggregation:** `audiodg.exe` creates the APO with `CreateInstance(outer, IID_IUnknown)`.
+  `src/DivioraAPO.cpp` implements an inner non-delegating `IUnknown`; the self-test checks this path.
+- **Composite effect lists:** on current DCH drivers (here Realtek + Waves), Windows reads
+  `{d04e05a6-…},13` (stream), `,14` (mode) and `,15` (endpoint). The installer prepends Diviora to
+  `,13` and keeps the existing entries. Legacy `,5/,6` are used only when no composite list exists.
+- **Write-restricted token:** the status folder grants `NT SERVICE\Audiosrv` and `WRITE RESTRICTED`.
+- **Reboot or `Restart-Service Audiosrv`** after changing the effect list or the DLL.
+
 ## Safety rules built in
 
 - A missing, corrupt or undecryptable config means pass-through (normal sound), never silence.
 - The audio thread never allocates, locks or touches files. New filters are swapped in lock-free.
 - Rust panics are caught at the C interface, so a bug in the parser cannot crash `audiodg.exe`.
 - The DLL uses the static runtime, so it has no VC++ redistributable dependency inside `audiodg.exe`.
-- Only the two backed-up values on the default speakers are changed, and both are restored on uninstall or on a failed install.
+- Only the backed-up values on the default speakers (the stream-effect list and the enhancements flag) are changed, and they are restored exactly on uninstall or on a failed install.
