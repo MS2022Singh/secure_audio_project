@@ -7,6 +7,17 @@ needs no virtual cable and no Secure Boot changes. Configurations stay encrypted
 locked on users' PCs. The developer publishes updates once, and every activated device
 applies them automatically. The app also updates itself.
 
+## Download (test build)
+
+Built automatically from the latest green CI run. Direct links work in any browser or phone:
+
+- **Windows installer:** https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/Diviora-Setup-windows-x64.exe
+- **Android APK:** https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/Diviora-android-arm64-test.apk
+- All files and notes: https://github.com/MS2022Singh/secure_audio_project/releases/tag/test-build
+
+Test builds aren't code-signed. Windows SmartScreen may say "Windows protected your PC": click
+**More info → Run anyway**. Android asks you to allow installing apps from this source.
+
 | | |
 |---|---|
 | **Users** | [User Manual](docs/USER_MANUAL.md) · [Acceptance tests (how to check everything)](docs/ACCEPTANCE_TESTS.md) |

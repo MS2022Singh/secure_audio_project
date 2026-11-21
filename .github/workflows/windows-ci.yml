@@ -100,3 +100,35 @@ jobs:
         with:
           name: diviora-android-${{ github.sha }}
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+
+  # Publish every green build as the "test-build" pre-release: plain download links
+  # (browser, phone, no sign-in) for the Windows installer and the Android APK.
+  publish-test-build:
+    needs: [ build-and-test, android ]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+
+      - name: Collect installer and APK
+        run: |
+          mkdir out
+          find dl -name "*-setup.exe" -exec cp {} out/Diviora-Setup-windows-x64.exe \;
+          find dl -name "*.apk" -exec cp {} out/Diviora-android-arm64-test.apk \;
+          ls -la out
+          test -f out/Diviora-Setup-windows-x64.exe && test -f out/Diviora-android-arm64-test.apk
+
+      - name: Replace the test-build release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release delete test-build --repo "$REPO" --yes --cleanup-tag || true
+          gh release create test-build out/* --repo "$REPO" --prerelease \
+            --target "${{ github.sha }}" \
+            --title "Test build (${GITHUB_REF_NAME}, ${GITHUB_SHA::7})" \
+            --notes "Latest automatic test build. Windows: run Diviora-Setup-windows-x64.exe (if SmartScreen warns: More info → Run anyway). Android: install Diviora-android-arm64-test.apk (allow installing unknown apps). How to check everything: docs/ACCEPTANCE_TESTS.md. Not for distribution to users."

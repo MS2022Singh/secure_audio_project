@@ -138,7 +138,20 @@ Each release:
 Configuration updates don't need a release: **Lock Config** on the developer PC publishes them,
 and users receive them within about 5 minutes.
 
-## 7. Security notes
+## 7. Costs (testing is free)
+
+| Item | Needed for | Cost | Free alternative |
+|---|---|---|---|
+| Builds, test downloads (GitHub Actions + Releases) | everything | Free (public repository) | – |
+| Licence server hosting | users activating over the internet | Small VPS, roughly US$4–6 per month; a domain is optional (about US$10 per year); HTTPS certificates are free (Let's Encrypt) | Run `backend/server.py` on your own PC for testing; Oracle Cloud "Always Free" VM |
+| Update signing key (`npx tauri signer generate`) | automatic app updates | **Free**: you generate it yourself | – |
+| Windows code-signing certificate | removing the "Unknown publisher" SmartScreen warning | Microsoft Trusted Signing about US$10 per month (check eligibility for your country); OV/EV certificates from CAs roughly US$200–600 per year | None that is legitimate. Users can click **More info → Run anyway**; that is fine for testing |
+| Android release signing key | publishing APKs | Free (self-generated) | Debug-signed test APK |
+| Google Play developer account | Play Store listing | US$25 one-time | Install the APK directly (sideloading) |
+
+Prices are approximate. Check the providers' current pricing before buying.
+
+## 8. Security notes
 
 - No built-in passwords. Passwords and recovery keys are stored as salted PBKDF2-SHA256 hashes.
 - `config.dvr` is DPAPI-encrypted per machine and ACL-locked. An administrator on a user's PC can
