@@ -1,0 +1,41 @@
+name: windows-ci
+
+on:
+  push:
+    branches: [ "feature/**", "main" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: DSP core tests (parser, filters, watermark)
+        working-directory: diviora-dsp
+        run: cargo test --release
+
+      - name: Build native APO (DivioraAPO.dll, self-test, injector)
+        shell: cmd
+        run: windows-apo\build_native_apo.bat
+
+      - name: APO self-test (drives the DLL like audiodg.exe, incl. aggregation)
+        working-directory: windows-apo/build/Release
+        run: .\apo_selftest.exe
+
+      - name: Tauri app type-check
+        working-directory: src-tauri
+        run: cargo check
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-apo-${{ github.sha }}
+          path: |
+            windows-apo/build/Release/DivioraAPO.dll
+            windows-apo/build/Release/apo_selftest.exe
+            windows-apo/build/Release/injector_single_slot.exe
