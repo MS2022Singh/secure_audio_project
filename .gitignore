@@ -17,3 +17,9 @@ dist/
 
 # Local backups taken during debugging
 registry_backups/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
