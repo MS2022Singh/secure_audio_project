@@ -31,6 +31,18 @@ struct FakeMediaType : IAudioMediaType {
     HRESULT STDMETHODCALLTYPE GetUncompressedAudioFormat(UNCOMPRESSEDAUDIOFORMAT*) override { return E_NOTIMPL; }
 };
 
+// Minimal controlling object, the way audiodg.exe aggregates APOs.
+struct FakeOuter : IUnknown {
+    LONG refs = 1;
+    IUnknown* inner = nullptr;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** p) override {
+        if (riid == IID_IUnknown) { *p = this; AddRef(); return S_OK; }
+        return inner ? inner->QueryInterface(riid, p) : E_NOINTERFACE;   // delegate to the APO
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override { return InterlockedDecrement(&refs); }
+};
+
 static bool WriteConfig(const std::wstring& path, const std::string& text) {
     static const char ent[] = "Diviora.APO.Config.v1";
     DATA_BLOB in{ (DWORD)text.size(), (BYTE*)text.data() }, e{ (DWORD)sizeof(ent) - 1, (BYTE*)ent }, out{};
@@ -119,7 +131,35 @@ int main() {
     printf("status: %s", r ? st : "MISSING\n"); fails += !r;
 
     printf("unlock: 0x%lx\n", conf->UnlockForProcess());
-    rt->Release(); conf->Release(); apo->Release(); cf->Release();
+    rt->Release(); conf->Release(); apo->Release();
+
+    // Aggregated creation: what audiodg.exe does (CreateInstance(outer, IID_IUnknown)).
+    {
+        FakeOuter outer;
+        HRESULT hr = cf->CreateInstance(&outer, IID_IUnknown, (void**)&outer.inner);
+        bool ok = SUCCEEDED(hr) && outer.inner;
+        IAudioProcessingObject* aApo = nullptr; IAudioProcessingObjectConfiguration* aConf = nullptr; IAudioProcessingObjectRT* aRt = nullptr;
+        if (ok) ok = SUCCEEDED(outer.QueryInterface(__uuidof(IAudioProcessingObject), (void**)&aApo)) &&
+                     SUCCEEDED(outer.QueryInterface(__uuidof(IAudioProcessingObjectConfiguration), (void**)&aConf)) &&
+                     SUCCEEDED(outer.QueryInterface(__uuidof(IAudioProcessingObjectRT), (void**)&aRt));
+        // Interfaces must report the outer object as their IUnknown (COM identity rule).
+        IUnknown* ident = nullptr;
+        if (ok) { aApo->QueryInterface(IID_IUnknown, (void**)&ident); ok = (ident == &outer); if (ident) ident->Release(); }
+        if (ok) ok = SUCCEEDED(aApo->Initialize(0, nullptr)) && SUCCEEDED(aConf->LockForProcess(1, &pd1, 1, &pd1));
+        if (ok) {
+            WriteConfig(cfg, "Preamp: -12 dB\n"); Sleep(1500);
+            check("aggregated (audiodg-style): Preamp -12 dB", RunBlockDb(aRt, 1000, 40), -12, 0.05);
+            DeleteFileW(cfg.c_str()); Sleep(1500);
+            aConf->UnlockForProcess();
+        } else {
+            printf("aggregated (audiodg-style) create/query: FAIL (hr=0x%lx)\n", hr); fails++;
+        }
+        if (aRt) aRt->Release();
+        if (aConf) aConf->Release();
+        if (aApo) aApo->Release();
+        if (outer.inner) outer.inner->Release();   // final release of the inner object deletes the APO
+    }
+    cf->Release();
     printf("%s (%d failures)\n", fails ? "SOME CHECKS FAILED" : "ALL CHECKS PASSED", fails);
     return fails ? 1 : 0;
 }

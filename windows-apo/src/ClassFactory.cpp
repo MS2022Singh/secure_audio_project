@@ -31,11 +31,14 @@ public:
         DvrLog(L"CreateInstance called riid=%s outer=%p", DvrGuidStr(riid).s, pUnkOuter);
         if (!ppv) return E_POINTER;
         *ppv = nullptr;
-        if (pUnkOuter) return CLASS_E_NOAGGREGATION;
-        DivioraAPO* apo = new (std::nothrow) DivioraAPO();
+        // COM rule: an aggregated object can only be created for IID_IUnknown.
+        if (pUnkOuter && riid != IID_IUnknown) return CLASS_E_NOAGGREGATION;
+        DivioraAPO* apo = new (std::nothrow) DivioraAPO(pUnkOuter);
         if (!apo) return E_OUTOFMEMORY;
-        HRESULT hr = apo->QueryInterface(riid, ppv);
-        apo->Release();
+        // Ask the inner unknown (never the outer), then drop the construction reference.
+        IUnknown* inner = apo->NonDelegatingUnknown();
+        HRESULT hr = inner->QueryInterface(riid, ppv);
+        inner->Release();
         DvrLog(L"CreateInstance -> 0x%08lx", hr);
         return hr;
     }

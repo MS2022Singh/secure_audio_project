@@ -20,9 +20,13 @@ static const PROPERTYKEY kPkeyDeviceFriendlyName =
 static const GUID kSubtypeIeeeFloat =
     { 0x00000003, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
 
-DivioraAPO::DivioraAPO()
-    : m_cRef(1), m_registered(false), m_locked(false), m_formatIsFloat32(false),
-      m_loggedFirstProcess(false), m_sampleRate(48000), m_channels(2), m_bytesPerFrame(8), m_pending(nullptr), m_active(nullptr), m_retired(nullptr) {}
+DivioraAPO::DivioraAPO(IUnknown* pUnkOuter)
+    : m_pUnkOuter(nullptr), m_cRef(1), m_registered(false), m_locked(false), m_formatIsFloat32(false),
+      m_loggedFirstProcess(false), m_sampleRate(48000), m_channels(2), m_bytesPerFrame(8), m_pending(nullptr), m_active(nullptr), m_retired(nullptr) {
+    m_inner.self = this;
+    // Not aggregated: the inner unknown is also the controlling unknown.
+    m_pUnkOuter = pUnkOuter ? pUnkOuter : static_cast<IUnknown*>(&m_inner);
+}
 
 DivioraAPO::~DivioraAPO() {
     if (m_registered) {
@@ -33,10 +37,15 @@ DivioraAPO::~DivioraAPO() {
     FreeAllEngines();
 }
 
-// ---------------- IUnknown ----------------
-STDMETHODIMP DivioraAPO::QueryInterface(REFIID riid, void** ppv) {
+// ---------------- IUnknown (COM aggregation) ----------------
+// Windows audio (audiodg.exe) creates APOs aggregated: CreateInstance(pUnkOuter, IID_IUnknown).
+// Per the COM rules the inner unknown answers QueryInterface and owns the lifetime, and
+// every interface's IUnknown methods delegate to the outer (controlling) object.
+HRESULT DivioraAPO::NonDelegatingQueryInterface(REFIID riid, void** ppv) {
     if (!ppv) return E_POINTER;
-    if (riid == __uuidof(IUnknown) || riid == __uuidof(IAudioProcessingObject))
+    if (riid == __uuidof(IUnknown))
+        *ppv = static_cast<IUnknown*>(&m_inner);
+    else if (riid == __uuidof(IAudioProcessingObject))
         *ppv = static_cast<IAudioProcessingObject*>(this);
     else if (riid == __uuidof(IAudioProcessingObjectConfiguration))
         *ppv = static_cast<IAudioProcessingObjectConfiguration*>(this);
@@ -52,15 +61,12 @@ STDMETHODIMP DivioraAPO::QueryInterface(REFIID riid, void** ppv) {
         *ppv = nullptr;
         return E_NOINTERFACE;
     }
-    AddRef();
+    static_cast<IUnknown*>(*ppv)->AddRef();
     return S_OK;
 }
-STDMETHODIMP_(ULONG) DivioraAPO::AddRef() { return InterlockedIncrement(&m_cRef); }
-STDMETHODIMP_(ULONG) DivioraAPO::Release() {
-    ULONG r = InterlockedDecrement(&m_cRef);
-    if (r == 0) delete this;
-    return r;
-}
+STDMETHODIMP DivioraAPO::QueryInterface(REFIID riid, void** ppv) { return m_pUnkOuter->QueryInterface(riid, ppv); }
+STDMETHODIMP_(ULONG) DivioraAPO::AddRef() { return m_pUnkOuter->AddRef(); }
+STDMETHODIMP_(ULONG) DivioraAPO::Release() { return m_pUnkOuter->Release(); }
 
 // ---------------- IAudioProcessingObject ----------------
 STDMETHODIMP DivioraAPO::Reset() { return S_OK; }

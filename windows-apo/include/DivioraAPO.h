@@ -24,10 +24,15 @@ class DivioraAPO :
     public IAudioSystemEffects2
 {
 public:
-    DivioraAPO();
+    // pUnkOuter: the controlling object when Windows audio aggregates the APO
+    // (audiodg.exe always does), or nullptr for standalone use (self-test).
+    explicit DivioraAPO(IUnknown* pUnkOuter = nullptr);
     virtual ~DivioraAPO();
 
-    // IUnknown
+    // The inner (non-delegating) IUnknown handed back to an aggregating outer object.
+    IUnknown* NonDelegatingUnknown() { return &m_inner; }
+
+    // IUnknown of every interface: delegates to the controlling (outer) unknown.
     STDMETHODIMP QueryInterface(REFIID riid, void** ppvObject) override;
     STDMETHODIMP_(ULONG) AddRef() override;
     STDMETHODIMP_(ULONG) Release() override;
@@ -59,6 +64,23 @@ public:
     bool IsLockedForProcess() const { return m_locked; }
 
 private:
+    // COM aggregation: the inner unknown owns the reference count and answers
+    // QueryInterface; the public IUnknown methods forward to m_pUnkOuter.
+    struct InnerUnknown : public IUnknown {
+        DivioraAPO* self = nullptr;
+        STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override { return self->NonDelegatingQueryInterface(riid, ppv); }
+        STDMETHODIMP_(ULONG) AddRef() override { return InterlockedIncrement(&self->m_cRef); }
+        STDMETHODIMP_(ULONG) Release() override {
+            ULONG r = InterlockedDecrement(&self->m_cRef);
+            if (r == 0) delete self;
+            return r;
+        }
+    };
+    friend struct InnerUnknown;
+    HRESULT NonDelegatingQueryInterface(REFIID riid, void** ppv);
+
+    InnerUnknown m_inner;
+    IUnknown* m_pUnkOuter;          // outer object, or &m_inner when not aggregated
     volatile LONG m_cRef;
     bool m_registered;              // registered with ConfigManager
     bool m_locked;                  // guarded by ConfigManager mutex
