@@ -9,7 +9,7 @@ applies them automatically. The app also updates itself.
 
 | | |
 |---|---|
-| **Users** | [User Manual](docs/USER_MANUAL.md) |
+| **Users** | [User Manual](docs/USER_MANUAL.md) · [Acceptance tests (how to check everything)](docs/ACCEPTANCE_TESTS.md) |
 | **Developer** | [Developer Guide](docs/DEVELOPER_GUIDE.md) · [Native APO](windows-apo/README.md) · [Licence server](backend/README.md) · [DSP core](diviora-dsp/README.md) |
 | **Legal** | [Licence](LICENSE.txt) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Security](SECURITY.md) |
 | **Changes** | [Changelog](CHANGELOG.md) |
@@ -25,7 +25,7 @@ applies them automatically. The app also updates itself.
 | Licence server (one ID = one device, invites, config publishing) | Implemented and tested; deployment by the developer |
 | Sync service (automatic configuration updates) | Implemented; to be verified on hardware |
 | Single Windows installer + signed auto-update | Implemented; first signed release pending the developer's signing key |
-| Android | Not started; see the Developer Guide |
+| Android | Music player: library, in-app EQ + watermark, licence + config sync (APK built in CI; to be verified on a phone). Android does not allow processing other apps' audio |
 
 ## Build
 
