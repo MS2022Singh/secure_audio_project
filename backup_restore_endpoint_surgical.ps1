@@ -6,6 +6,16 @@ param(
 $fxKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\$EndpointGuid\FxProperties"
 $backupFile = "C:\ProgramData\Diviora\registry_backups\endpoint_$($EndpointGuid.Trim('{','}'))_values.json"
 
+# Diviora's own CLSID is never part of an "original" value: stripping it makes backups
+# taken while Diviora is already bound (e.g. a re-install) still restore the OEM list.
+$DivioraClsid = "{D1B100A1-8888-4444-9999-000000000001}"
+function Remove-Diviora($v) {
+    # The leading comma keeps a one-item list a list (PowerShell would unroll it to a string).
+    if ($v -is [array]) { return ,@($v | Where-Object { "$_" -ne $DivioraClsid }) }
+    if ("$v" -eq $DivioraClsid) { return $null }
+    return $v
+}
+
 $valueNames = @(
     "{D04E05A6-594B-4fb6-A80D-01AF5EED7D1D},5",
     "{D04E05A6-594B-4fb6-A80D-01AF5EED7D1D},13",
@@ -19,7 +29,8 @@ if ($Mode -eq "backup") {
     }
     $backupData = @{}
     foreach ($name in $valueNames) {
-        $val = (Get-ItemProperty -Path $fxKey -Name $name -ErrorAction SilentlyContinue).$name
+        $val = Remove-Diviora (Get-ItemProperty -Path $fxKey -Name $name -ErrorAction SilentlyContinue).$name
+        if ($val -is [array] -and $val.Count -eq 0) { $val = $null }
         if ($null -ne $val) {
             if ($val -is [array]) { $backupData[$name] = @($val) } else { $backupData[$name] = $val }
             Write-Host "  [+] Backed up $name = $($val -join ' | ')" -ForegroundColor Green
@@ -46,7 +57,8 @@ else {
     }
     $failed = 0
     foreach ($name in $valueNames) {
-        $val = $backupData.$name
+        $val = Remove-Diviora $backupData.$name
+        if ($val -is [array] -and $val.Count -eq 0) { $val = $null }
         if ($null -eq $val) {
             & $injector --write $EndpointGuid $name delete
         } elseif ($val -is [array]) {
