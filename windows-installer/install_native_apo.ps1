@@ -22,9 +22,18 @@
 param([switch]$Verify, [switch]$Uninstall, [switch]$Diagnose, [string]$TestConfig, [switch]$ClearConfig, [switch]$Canary)
 $ErrorActionPreference = 'Stop'
 
-$Root       = Split-Path -Parent $PSScriptRoot
-$BuildDir   = Join-Path $Root 'windows-apo\build\Release'
-$BackupPs1  = Join-Path $Root 'backup_restore_endpoint_surgical.ps1'
+# Two layouts: the installed app (all files next to this script, from the Setup.exe) or
+# the project folder (developer: windows-apo\build\Release).
+if (Test-Path (Join-Path $PSScriptRoot 'DivioraAPO.dll')) {
+    $BuildDir  = $PSScriptRoot
+    $BackupPs1 = Join-Path $PSScriptRoot 'backup_restore_endpoint_surgical.ps1'
+} else {
+    $Root      = Split-Path -Parent $PSScriptRoot
+    $BuildDir  = Join-Path $Root 'windows-apo\build\Release'
+    $BackupPs1 = Join-Path $Root 'backup_restore_endpoint_surgical.ps1'
+}
+$SyncExe    = Join-Path $BuildDir 'diviora-sync.exe'
+$ClientDir  = Join-Path $env:ProgramData 'Diviora\client'
 $InstallDir = Join-Path $env:ProgramFiles 'Diviora'
 $TargetDll  = Join-Path $InstallDir 'DivioraAPO.dll'
 $ApoDir     = Join-Path $env:ProgramData 'Diviora\apo'
@@ -48,6 +57,28 @@ function Ensure-AudioRunning {
             $sv.WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
         }
     }
+}
+function Install-SyncService {
+    if (-not (Test-Path $SyncExe)) { Say '  (diviora-sync.exe not built: automatic config updates not installed)' 'DarkGray'; return }
+    New-Item -ItemType Directory -Force -Path $ClientDir | Out-Null
+    # The app (normal user) writes the activation here; the service (SYSTEM) reads it.
+    & icacls.exe $ClientDir /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Null
+    $target = Join-Path $InstallDir 'diviora-sync.exe'
+    if (Get-Service DivioraSync -ErrorAction SilentlyContinue) { Stop-Service DivioraSync -Force -ErrorAction SilentlyContinue }
+    Copy-Item $SyncExe $target -Force
+    if (-not (Get-Service DivioraSync -ErrorAction SilentlyContinue)) {
+        & sc.exe create DivioraSync binPath= "`"$target`" --service" start= auto DisplayName= "Diviora configuration sync" | Out-Null
+        & sc.exe description DivioraSync "Applies the developer's published Diviora configuration to this PC." | Out-Null
+    }
+    Start-Service DivioraSync -ErrorAction SilentlyContinue
+    Say '  Sync service installed (applies developer updates automatically).'
+}
+function Remove-SyncService {
+    if (Get-Service DivioraSync -ErrorAction SilentlyContinue) {
+        Stop-Service DivioraSync -Force -ErrorAction SilentlyContinue
+        & sc.exe delete DivioraSync | Out-Null
+    }
+    Remove-Item (Join-Path $InstallDir 'diviora-sync.exe') -Force -ErrorAction SilentlyContinue
 }
 function Set-Sddl($path, $sddl) {
     $acl = Get-Acl -Path $path
@@ -154,6 +185,7 @@ if ($Uninstall) {
     } else {
         Say 'No install manifest found; endpoint values were not changed by this installer.' 'Yellow'
     }
+    Remove-SyncService
     if (Test-Path $TargetDll) {
         & regsvr32.exe /u /s $TargetDll
         Stop-Service Audiosrv -Force       # release the DLL so it can be deleted
@@ -168,7 +200,7 @@ if ($Uninstall) {
 
 # ------------------------------------------------------------------ Install
 foreach ($f in 'DivioraAPO.dll', 'apo_selftest.exe', 'injector_single_slot.exe') {
-    if (-not (Test-Path (Join-Path $BuildDir $f))) { throw "Missing $f. Run windows-apo\build_native_apo.bat first." }
+    if (-not (Test-Path (Join-Path $BuildDir $f))) { throw "Missing $f in $BuildDir. Run windows-apo\build_native_apo.bat first." }
 }
 
 Say '=== 1/5 Self-test (no system changes) ===' 'Cyan'
@@ -217,6 +249,7 @@ try {
     # Windows Audio must be running here: it is what reports the default speakers.
     & (Join-Path $BuildDir 'injector_single_slot.exe')
     if ($LASTEXITCODE -ne 0) { throw 'Binding failed (see the message above).' }
+    Install-SyncService
 }
 catch {
     Say "ERROR: $($_.Exception.Message)" 'Red'

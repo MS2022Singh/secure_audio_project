@@ -50,7 +50,8 @@ else {
     $backupData = Get-Content -Path $backupFile -Raw | ConvertFrom-Json
     # FxProperties is not writable by Administrators directly; the injector adds a
     # temporary write permission and restores the original owner/permissions afterwards.
-    $injector = Join-Path $PSScriptRoot "windows-apo\build\Release\injector_single_slot.exe"
+    $injector = Join-Path $PSScriptRoot "injector_single_slot.exe"          # installed app
+    if (-not (Test-Path $injector)) { $injector = Join-Path $PSScriptRoot "windows-apo\build\Release\injector_single_slot.exe" }  # project folder
     if (-not (Test-Path $injector)) {
         Write-Error "Missing $injector. Run windows-apo\build_native_apo.bat first."
         exit 1

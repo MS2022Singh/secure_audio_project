@@ -1,0 +1,63 @@
+DIVIORA PSYCHOACOUSTICS — END-USER LICENCE AGREEMENT
+
+Copyright (c) 2026 Diviora. All rights reserved.
+
+This software ("the Software") — including the Diviora Psychoacoustics application, the
+Diviora audio processing component (DivioraAPO.dll), the Diviora sync service, the
+licensing server and all accompanying files and documentation — is the property of
+Diviora and is protected by copyright law.
+
+1. LICENCE GRANT
+   Subject to this agreement and to a valid licence key or invite issued by Diviora, you
+   may install and use the Software on ONE device per licence key, for your personal or
+   internal use, for the period stated by your licence.
+
+2. RESTRICTIONS
+   You may not, and may not allow others to:
+   a) copy, distribute, sell, rent, lease, sublicense or publish the Software;
+   b) modify, translate or create derivative works of the Software;
+   c) reverse engineer, decompile, disassemble or otherwise attempt to obtain the source
+      code, the audio configurations or the watermark parameters, except where such
+      restriction is prohibited by applicable law;
+   d) remove, alter or circumvent licence checks, device binding, encryption, access
+      controls or audio watermarks;
+   e) use the Software on more devices than your licence allows.
+
+3. AUDIO WATERMARKS
+   Audio processed by the Software may contain an inaudible identifying watermark. You
+   agree not to remove or alter it. The watermark may be used to identify the licence
+   under which audio was processed.
+
+4. CONFIGURATIONS AND CONTENT
+   Audio processing configurations supplied through the Software remain the property of
+   Diviora (or the developer who published them) and are licensed, not sold, to you.
+
+5. UPDATES
+   The Software may download and install updates and configuration changes automatically.
+   This agreement applies to all updates unless they come with different terms.
+
+6. THIRD-PARTY COMPONENTS
+   The Software includes open-source components licensed under their own terms, listed in
+   THIRD_PARTY_NOTICES.md. Nothing in this agreement limits your rights under those
+   licences for those components.
+
+7. TERMINATION
+   This licence ends automatically if you breach it or when your licence period ends. On
+   termination you must uninstall the Software. Diviora may revoke a licence key that is
+   misused.
+
+8. NO WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+   INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+
+9. LIMITATION OF LIABILITY
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, DIVIORA SHALL NOT BE LIABLE FOR ANY INDIRECT,
+   INCIDENTAL, SPECIAL OR CONSEQUENTIAL DAMAGES, OR FOR LOSS OF DATA, ARISING FROM THE USE
+   OF OR INABILITY TO USE THE SOFTWARE.
+
+10. GOVERNING LAW
+    This agreement is governed by the laws of the country in which Diviora is established,
+    without regard to conflict-of-law rules.
+
+By installing or using the Software you agree to this agreement. If you do not agree, do
+not install or use the Software.

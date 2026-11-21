@@ -9,6 +9,21 @@ pub use diviora_client::apo_config;
 
 pub use playback::manager::PlaybackManager;
 
+async fn auto_update(app: tauri::AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+    let Ok(updater) = app.updater() else { return };
+    match updater.check().await {
+        Ok(Some(update)) => {
+            eprintln!("[update] installing version {}", update.version);
+            if update.download_and_install(|_, _| {}, || {}).await.is_ok() {
+                app.restart();
+            }
+        }
+        Ok(None) => {}
+        Err(e) => eprintln!("[update] check skipped: {}", e),
+    }
+}
+
 fn main() {
     // PlaybackManager::new() returns a Result, so we unwrap it
     let playback_instance = PlaybackManager::new().expect("Failed to initialize PlaybackManager engine");
@@ -16,9 +31,14 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(manager.clone())
         .setup(move |app| {
             app.manage(manager.clone());
+            // Automatic updates: check the developer's latest release at start-up and
+            // install it silently (signed updates only; see DEVELOPER_GUIDE.md).
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move { auto_update(handle).await });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

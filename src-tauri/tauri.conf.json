@@ -1,24 +1,60 @@
 {
-    "$schema":  "https://schema.tauri.app/config/2",
-    "productName":  "Diviora Psychoacoustics",
-    "version":  "0.1.0",
-    "identifier":  "com.diviora.psychoacoustics",
-    "build":  {
-                  "frontendDist":  "../frontend"
-              },
-    "app":  {
-                "withGlobalTauri":  true,
-                "windows":  [
-                                {
-                                    "title":  "DIVIORA PSYCHOACOUSTICS",
-                                    "width":  1280,
-                                    "height":  800,
-                                    "resizable":  true,
-                                    "dragDropEnabled":  true
-                                }
-                            ],
-                "security":  {
-                                 "csp":  null
-                             }
-            }
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Diviora Psychoacoustics",
+  "version": "0.2.0",
+  "identifier": "com.diviora.psychoacoustics",
+  "build": {
+    "frontendDist": "../frontend"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "DIVIORA PSYCHOACOUSTICS",
+        "width": 1280,
+        "height": 800,
+        "resizable": true,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "Diviora",
+    "copyright": "Copyright (c) 2026 Diviora. All rights reserved.",
+    "shortDescription": "Diviora Psychoacoustics player and system-wide audio engine",
+    "licenseFile": "../LICENSE.txt",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "createUpdaterArtifacts": false,
+    "resources": {
+      "../windows-apo/build/Release/DivioraAPO.dll": "apo/DivioraAPO.dll",
+      "../windows-apo/build/Release/apo_selftest.exe": "apo/apo_selftest.exe",
+      "../windows-apo/build/Release/injector_single_slot.exe": "apo/injector_single_slot.exe",
+      "../windows-apo/build/Release/diviora-sync.exe": "apo/diviora-sync.exe",
+      "../windows-installer/install_native_apo.ps1": "apo/install_native_apo.ps1",
+      "../backup_restore_endpoint_surgical.ps1": "apo/backup_restore_endpoint_surgical.ps1",
+      "../docs/USER_MANUAL.md": "docs/USER_MANUAL.md"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "windows/installer-hooks.nsh"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/MS2022Singh/secure_audio_project/releases/latest/download/latest.json"
+      ],
+      "pubkey": "",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
 }
