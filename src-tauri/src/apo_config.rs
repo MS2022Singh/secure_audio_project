@@ -16,10 +16,12 @@ pub const MAGIC: &[u8; 4] = b"DVRC";
 pub const FORMAT_VERSION: u32 = 1;
 
 // SDDL: protected DACL, inherited by files created inside.
-// LS = LOCAL SERVICE (audiodg); AC / S-1-15-2-2 = (restricted) app-package identities audio components may run with.
-const APO_DIR_SDDL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LS)(A;OICI;FR;;;AC)(A;OICI;FR;;;S-1-15-2-2)";
+// LS = LOCAL SERVICE (audiodg); AC / S-1-15-2-2 = (restricted) app-package identities;
+// S-1-5-80-2676... = NT SERVICE\\Audiosrv and S-1-5-33 = WRITE RESTRICTED: audiodg runs with a
+// write-restricted token, so writes need one of these in addition to LOCAL SERVICE.
+const APO_DIR_SDDL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LS)(A;OICI;FR;;;AC)(A;OICI;FR;;;S-1-15-2-2)(A;OICI;FR;;;S-1-5-80-2676549577-1911656217-2625096541-4178041876-1366760775)";
 // audiodg (LOCAL SERVICE) may modify status files; users may read the (non-secret) status.
-const STATUS_DIR_SDDL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)(A;OICI;0x1301bf;;;AC)(A;OICI;0x1301bf;;;S-1-15-2-2)(A;OICI;FR;;;BU)";
+const STATUS_DIR_SDDL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)(A;OICI;0x1301bf;;;AC)(A;OICI;0x1301bf;;;S-1-15-2-2)(A;OICI;FR;;;BU)(A;OICI;0x1301bf;;;S-1-5-80-2676549577-1911656217-2625096541-4178041876-1366760775)(A;OICI;0x1301bf;;;S-1-5-33)";
 
 pub fn base_dir() -> PathBuf {
     let pd = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());

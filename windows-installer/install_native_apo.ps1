@@ -19,7 +19,7 @@
         powershell -ExecutionPolicy Bypass -File windows-installer\install_native_apo.ps1 -Verify
         powershell -ExecutionPolicy Bypass -File windows-installer\install_native_apo.ps1 -Uninstall
 #>
-param([switch]$Verify, [switch]$Uninstall, [switch]$Diagnose)
+param([switch]$Verify, [switch]$Uninstall, [switch]$Diagnose, [string]$TestConfig, [switch]$ClearConfig)
 $ErrorActionPreference = 'Stop'
 
 $Root       = Split-Path -Parent $PSScriptRoot
@@ -53,6 +53,26 @@ function Set-Sddl($path, $sddl) {
     $acl = Get-Acl -Path $path
     $acl.SetSecurityDescriptorSddlForm($sddl)
     Set-Acl -Path $path -AclObject $acl
+}
+
+# ------------------------------------------------------------------ Test config (listening test)
+function Write-LockedConfig([string]$text) {
+    Add-Type -AssemblyName System.Security
+    $entropy = [Text.Encoding]::ASCII.GetBytes('Diviora.APO.Config.v1')
+    $blob = [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($text), $entropy,
+            [Security.Cryptography.DataProtectionScope]::LocalMachine)
+    $bytes = [byte[]](0x44, 0x56, 0x52, 0x43) + [BitConverter]::GetBytes([uint32]1) + $blob   # "DVRC", v1
+    $cfg = Join-Path $ApoDir 'config.dvr'
+    [IO.File]::WriteAllBytes("$cfg.tmp", $bytes)
+    Move-Item "$cfg.tmp" $cfg -Force
+    Say "Locked test config written to $cfg ($($text.Length) characters). The APO applies it within ~1 s." 'Green'
+}
+if ($TestConfig -or $ClearConfig) {
+    Assert-Admin
+    if (-not (Test-Path $ApoDir)) { throw 'Not installed: run install_native_apo.ps1 first.' }
+    if ($ClearConfig) { Write-LockedConfig '' ; Say 'Pass-through restored (empty config).' 'Green' }
+    else { Write-LockedConfig ($TestConfig -replace '\\n', "`n") }
+    exit 0
 }
 
 # ------------------------------------------------------------------ Diagnose (read-only)
@@ -90,6 +110,8 @@ if ($Diagnose) {
             Get-Content $f -Raw | Write-Host
         } else { Say "  $f  (not present)" }
     }
+    $cfg = Join-Path $ApoDir 'config.dvr'
+    Say ("  Locked config present: " + (Test-Path $cfg) + $(if (Test-Path $cfg) { " ($((Get-Item $cfg).Length) bytes, $((Get-Item $cfg).LastWriteTime))" } else { '' }))
     Say "`n[6] Locked folder permissions"
     foreach ($d in $ApoDir, (Join-Path $ApoDir 'status')) {
         if (Test-Path $d) { Say "  $d"; Say ("    " + (Get-Acl $d).Sddl) }
@@ -184,8 +206,8 @@ try {
 
     Say '=== 4/5 Locked config folder ===' 'Cyan'
     New-Item -ItemType Directory -Force -Path (Join-Path $ApoDir 'status') | Out-Null
-    Set-Sddl $ApoDir 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LS)(A;OICI;FR;;;AC)(A;OICI;FR;;;S-1-15-2-2)'
-    Set-Sddl (Join-Path $ApoDir 'status') 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)(A;OICI;0x1301bf;;;AC)(A;OICI;0x1301bf;;;S-1-15-2-2)(A;OICI;FR;;;BU)'
+    Set-Sddl $ApoDir 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LS)(A;OICI;FR;;;AC)(A;OICI;FR;;;S-1-15-2-2)(A;OICI;FR;;;S-1-5-80-2676549577-1911656217-2625096541-4178041876-1366760775)'
+    Set-Sddl (Join-Path $ApoDir 'status') 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)(A;OICI;0x1301bf;;;AC)(A;OICI;0x1301bf;;;S-1-15-2-2)(A;OICI;FR;;;BU)(A;OICI;0x1301bf;;;S-1-5-80-2676549577-1911656217-2625096541-4178041876-1366760775)(A;OICI;0x1301bf;;;S-1-5-33)'
 
     Say '=== 5/5 Bind to the default speakers (stream-effect slot only) ===' 'Cyan'
     # Windows Audio must be running here: it is what reports the default speakers.
