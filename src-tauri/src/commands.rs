@@ -211,13 +211,21 @@ pub fn trigger_hardware_audio_playback(start: bool, _handle: AppHandle, manager:
     }
 }
 
+/// Remove this device's activation (licence key, session) and the local licence cache.
 #[tauri::command]
 pub fn reset_client_token() -> Result<String, String> {
-    let db_path = PathBuf::from("C:\\ProgramData\\Diviora\\license.db");
-    if db_path.exists() {
-        let _ = fs::remove_file(db_path);
-    }
-    Ok("Client token reset successfully.".to_string())
+    let _ = fs::remove_file(SecurityManager::get_sec_dir().join("license.db"));
+    let mut st = diviora_client::state::ClientState::load();
+    let had = !st.license_key.is_empty();
+    st.license_key.clear();
+    st.session.clear();
+    st.session_expires_at = 0;
+    st.save()?;
+    Ok(if had {
+        "Activation removed from this device. To move the licence to another device, the developer resets its binding on the server.".to_string()
+    } else {
+        "This device was not activated.".to_string()
+    })
 }
 
 #[tauri::command]
@@ -230,13 +238,16 @@ pub fn reset_master_password(old_pass: String, new_pass: String) -> Result<Strin
     SecurityManager::reset_master_pass(&old_pass, &new_pass)
 }
 
+/// Developer: create a single-use invite on the licence server (needs developer credentials:
+/// %LOCALAPPDATA%\\Diviora\\developer.json or DIVIORA_ADMIN_TOKEN).
 #[tauri::command]
 pub fn generate_invite_token(days_valid: u32) -> Result<String, String> {
-    let timestamp = chrono::Local::now().timestamp();
-    Ok(format!("DIVIORA-FREE-PASS-{}-{}", timestamp, days_valid))
+    let dev = diviora_client::state::developer_credentials().ok_or_else(|| {
+        "No licence server configured for the developer. See DEVELOPER_GUIDE.md, section \"Licence server\".".to_string()
+    })?;
+    diviora_client::server::admin_create_invite(&dev.server_url, &dev.admin_token, days_valid.max(1))
 }
 
-/// Developer machines only: commit and push the project (never force-push).
 #[tauri::command]
 pub fn sync_project_to_github(commit_msg: String) -> Result<String, String> {
     let root = find_repo_root().ok_or_else(|| "Not running from a project checkout: Git sync is a developer-machine feature.".to_string())?;
@@ -531,7 +542,15 @@ pub fn enforce_global_hardware_apo(manager: State<'_, Arc<Mutex<PlaybackManager>
         let mutex_lock = mgr.lock().unwrap();
         *mutex_lock.is_global_apo_locked.lock().unwrap() = true;
     }
-    Ok(format!("Master configuration encrypted and locked: {} (readable only by Windows audio and Administrators).", path.display()))
+    // Developer machine with a licence server: publish, so every activated device updates.
+    let published = match diviora_client::state::developer_credentials() {
+        Some(dev) => match diviora_client::server::admin_publish_config(&dev.server_url, &dev.admin_token, &payload) {
+            Ok(v) => format!(" Published to all users as version {}.", v),
+            Err(e) => format!(" NOT published to users: {}", e),
+        },
+        None => String::new(),
+    };
+    Ok(format!("Master configuration encrypted and locked: {} (readable only by Windows audio and Administrators).{}", path.display(), published))
 }
 
 #[tauri::command]
@@ -539,13 +558,37 @@ pub fn get_device_hwid() -> Result<String, String> {
     Ok(SecurityManager::generate_hwid())
 }
 
+/// Consumer activation: a licence key (DVL-...) or an invite token (DVI-...).
+/// With a licence server the binding "one ID = one device" is enforced by the server;
+/// without one, by the local cache only.
 #[tauri::command]
 pub fn authenticate_user_session(user_id: String, hwid: String) -> Result<String, String> {
-    SecurityManager::verify_session_exclusivity(&user_id, &hwid).map(|_| "Authenticated.".to_string())
+    let key = user_id.trim().to_uppercase();
+    let device = diviora_client::device::device_id();
+    let _ = hwid; // the UI passes it; the device ID is always computed here
+    let mut st = diviora_client::state::ClientState::load();
+    let Some(url) = diviora_client::state::server_url(&st) else {
+        SecurityManager::verify_session_exclusivity(&key, &device)?;
+        return Ok("Activated on this device (offline mode: no licence server configured).".to_string());
+    };
+    let session = if key.starts_with("DVI-") {
+        diviora_client::server::redeem_invite(&url, &key, &device)?
+    } else {
+        diviora_client::server::activate(&url, &key, &device)?
+    };
+    st.server_url = url;
+    st.license_key = session.license_key.clone();
+    st.device_id = device;
+    st.session = session.session;
+    st.session_expires_at = session.session_expires_at;
+    st.licence_expires_at = session.licence_expires_at;
+    st.save()?;
+    let until = chrono::DateTime::from_timestamp(session.licence_expires_at, 0)
+        .map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+    Ok(format!("Activated: licence {} is bound to this device until {}. Updates from the developer are applied automatically.",
+        session.license_key, until))
 }
 
-/// Developer uploads a watermark audio clip (WAV/MP3/FLAC/OGG). It replaces the generated
-/// tone and is mixed at the configured amplitude under everything the APO processes.
 #[tauri::command]
 pub fn upload_signature(signature: Vec<u8>, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
     use rodio::Source;

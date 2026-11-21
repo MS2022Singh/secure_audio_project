@@ -1,0 +1,11 @@
+[package]
+name = "diviora-sync"
+version = "0.1.0"
+edition = "2021"
+description = "Windows service: keeps the locked APO configuration in sync with the developer's server"
+
+[dependencies]
+diviora-client = { path = "../diviora-client" }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"

@@ -23,6 +23,7 @@ dirs = "5.0"
 
 diviora-dsp-core = { path = "../dsp-core" }
 diviora-dsp = { path = "../diviora-dsp" }
+diviora-client = { path = "../diviora-client" }
 
 winreg = "0.52"
 

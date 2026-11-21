@@ -1,147 +1,262 @@
-import os
-import sqlite3
-import json
+"""Diviora licensing and configuration-distribution server.
+
+* One licence ID = one device: the first activation binds a licence key to a device ID;
+  other devices are refused until the developer resets the binding.
+* Invite tokens (issued by the developer) create a time-limited licence on redemption.
+* The developer publishes the master configuration (Equalizer APO text + watermark
+  lines); activated clients poll for new versions and apply them automatically.
+* Configurations are stored encrypted (AES-256-GCM) and only served to valid sessions.
+
+Environment (all required in production, see backend/README.md):
+  DIVIORA_ADMIN_TOKEN   developer API token (long random string)
+  DIVIORA_SECRET        base64 32 bytes: signs client session tokens
+  DIVIORA_CONFIG_KEY    base64 32 bytes: encrypts stored configurations
+  DIVIORA_DB            SQLite path (default: diviora.db)
+Run behind HTTPS (e.g. a reverse proxy); never expose plain HTTP.
+"""
 import base64
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel
-import uvicorn
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import sqlite3
+import time
+from contextlib import contextmanager
+from typing import Optional
+
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from fastapi import Depends, FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
 
-app = FastAPI(title="Secure Audio Engine - Cloud Licensing API", version="2.0.0")
-DB_FILE = "licensing_registry.db"
+SESSION_SECONDS = 7 * 24 * 3600
 
-# Master Key for Configuration Encryption (Maintained in volatile server RAM memory)
-MASTER_CONFIG_KEY = AESGCM.generate_key(bit_length=256)
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    # Drops old table to apply new schema structure safely during development
-    cursor.execute("DROP TABLE IF EXISTS devices")
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS devices (
-            hardware_hash TEXT PRIMARY KEY,
-            license_key TEXT NOT NULL,
-            is_active INTEGER DEFAULT 1,
-            registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            expires_at TIMESTAMP NOT NULL
-        )
-    """)
-    
-    # Seed a Test License that binds permanently to the first real machine that checks in
-    cursor.execute(
-        "INSERT OR IGNORE INTO devices (hardware_hash, license_key, is_active, expires_at) VALUES (?, ?, ?, ?)",
-        ("TEST_DEVICE_FINGERPRINT_12345", "LICENSE-ABCD-1234", 1, "2030-12-31 23:59:59")
-    )
-    
-    # Seed an Expired Device profile to verify security policy validation paths
-    cursor.execute(
-        "INSERT OR IGNORE INTO devices (hardware_hash, license_key, is_active, expires_at) VALUES (?, ?, ?, ?)",
-        ("EXPIRED_DEVICE_FINGERPRINT", "LICENSE-EXPIRED-9999", 1, "2025-01-01 00:00:00")
-    )
-    
-    conn.commit()
-    conn.close()
+def _env_key(name: str) -> bytes:
+    raw = os.environ.get(name)
+    if not raw:
+        raise RuntimeError(f"Environment variable {name} is required (base64 of 32 random bytes).")
+    key = base64.b64decode(raw)
+    if len(key) != 32:
+        raise RuntimeError(f"{name} must decode to exactly 32 bytes.")
+    return key
 
-init_db()
 
-class HandshakeRequest(BaseModel):
-    hardware_hash: str
-    license_key: str
+class Settings:
+    def __init__(self):
+        self.admin_token = os.environ.get("DIVIORA_ADMIN_TOKEN", "")
+        if len(self.admin_token) < 24:
+            raise RuntimeError("DIVIORA_ADMIN_TOKEN is required and must be at least 24 characters.")
+        self.secret = _env_key("DIVIORA_SECRET")
+        self.config_key = _env_key("DIVIORA_CONFIG_KEY")
+        self.db_path = os.environ.get("DIVIORA_DB", "diviora.db")
 
-@app.get("/")
-def read_root():
-    return {"status": "online", "engine": "Secure Audio DSP Backend Layer"}
 
-@app.post("/api/v1/handshake")
-def device_handshake(payload: HandshakeRequest):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    
-    # 1. Look up any existing hardware registration records associated with this specific license key
-    cursor.execute(
-        "SELECT hardware_hash, is_active, expires_at FROM devices WHERE license_key = ?",
-        (payload.license_key,)
-    )
-    records = cursor.fetchall()
-    
-    if not records:
-        conn.close()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Access Denied: Unrecognized license configuration key."
-        )
-        
-    # Check if this exact hardware footprint is already registered to the license key
-    matching_record = next((r for r in records if r[0] == payload.hardware_hash), None)
-    
-    # 2. "ONE DEVICE, ONE ID" BINDING ENFORCEMENT ENGINE
-    if not matching_record:
-        # Check if the license key is currently sitting on an unassigned default testing placeholder token
-        placeholder_record = next((r for r in records if r[0] == "TEST_DEVICE_FINGERPRINT_12345"), None)
-        
-        if placeholder_record:
-            # DYNAMIC AUTO-BINDING: Permanently update the placeholder tracking record to the client's actual signature
-            is_active, expires_at_str = placeholder_record[1], placeholder_record[2]
-            cursor.execute(
-                "UPDATE devices SET hardware_hash = ? WHERE license_key = ? AND hardware_hash = ?",
-                (payload.hardware_hash, payload.license_key, "TEST_DEVICE_FINGERPRINT_12345")
-            )
+def create_app(settings: Optional[Settings] = None) -> FastAPI:
+    s = settings or Settings()
+    app = FastAPI(title="Diviora licensing & config API", version="3.0.0")
+
+    @contextmanager
+    def db():
+        conn = sqlite3.connect(s.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
             conn.commit()
-            print(f"[+]: Secure Binding Established. License {payload.license_key} locked to Device {payload.hardware_hash}.")
-        else:
-            # SECURITY BREACH: License key is already mapped to a different physical hardware hash signature
+        finally:
             conn.close()
-            print(f"[CRITICAL SECURITY ALERT]: Hardware fingerprint mismatch detected for license {payload.license_key}!")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access Denied: Hardware binding violation. One Device, One ID restriction active."
-            )
-    else:
-        # A valid historical registration entry match was located within the SQLite matrix
-        is_active, expires_at_str = matching_record[1], matching_record[2]
-        print(f"[+]: Device verified successfully against registered license keys.")
 
-    conn.close()
-    
-    # 3. REVOCATION & EXPIRATION POLICY CHECK
-    if is_active == 0:
-        raise HTTPException(status_code=403, detail="License has been manually revoked.")
+    with db() as c:
+        c.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS licenses (
+                license_key TEXT PRIMARY KEY,
+                device_id   TEXT,
+                created_at  INTEGER NOT NULL,
+                expires_at  INTEGER NOT NULL,
+                revoked     INTEGER NOT NULL DEFAULT 0,
+                note        TEXT
+            );
+            CREATE TABLE IF NOT EXISTS invites (
+                token       TEXT PRIMARY KEY,
+                days        INTEGER NOT NULL,
+                created_at  INTEGER NOT NULL,
+                redeemed_by TEXT
+            );
+            CREATE TABLE IF NOT EXISTS configs (
+                version     INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at  INTEGER NOT NULL,
+                sha256      TEXT NOT NULL,
+                nonce       BLOB NOT NULL,
+                ciphertext  BLOB NOT NULL
+            );
+            """
+        )
 
-    expires_at = datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M:%S")
-    if datetime.now() > expires_at:
-        raise HTTPException(status_code=403, detail=f"Your access token expired on {expires_at_str}.")
+    # ------------------------------------------------------------------ helpers
+    def new_key(prefix: str) -> str:
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        body = "".join(secrets.choice(alphabet) for _ in range(20))
+        return f"{prefix}-" + "-".join(body[i:i + 5] for i in range(0, 20, 5))
 
-    # 4. VOLATILE MEMORY ISO-ENCAPSULATED APO CONFIGURATION PAYLOAD
-    dsp_config_payload = {
-        "eq_bands": [0.5, -1.2, 3.4, 0.0, -0.5],
-        "high_pass_cutoff": 80.0,
-        "headroom_attenuation": 0.90,
-        "watermark_gain": 0.0005,
-        "alpha_smoothing": 0.002,
-        "stego_watermark_threshold": -45,
-        "watermark_salt": "SECURE_CRYPTO_SALT_9988"
-    }
-    
-    # Encrypt raw configurations inside an isolated ephemeral memory container
-    aesgcm = AESGCM(MASTER_CONFIG_KEY)
-    nonce = os.urandom(12) 
-    serialized_data = json.dumps(dsp_config_payload).encode('utf-8')
-    encrypted_bytes = aesgcm.encrypt(nonce, serialized_data, None)
-    
-    secure_transmission = {
-        "nonce": base64.b64encode(nonce).decode('utf-8'),
-        "payload": base64.b64encode(encrypted_bytes).decode('utf-8')
-    }
-    
-    print(f"[SUCCESS]: Handshake complete. Secure encrypted data stream dispatched.")
-    return {
-        "status": "authorized",
-        "expires_at": expires_at_str,
-        "secure_config": secure_transmission
-    }
+    def sign_session(license_key: str, device_id: str, exp: int) -> str:
+        msg = f"{license_key}|{device_id}|{exp}".encode()
+        sig = hmac.new(s.secret, msg, hashlib.sha256).digest()
+        return base64.urlsafe_b64encode(msg + b"|" + sig).decode()
+
+    def verify_session(token: str) -> tuple:
+        try:
+            raw = base64.urlsafe_b64decode(token.encode())
+            msg, sig = raw.rsplit(b"|", 1)
+            license_key, device_id, exp = msg.decode().split("|")
+        except Exception:
+            raise HTTPException(401, "Invalid session.")
+        good = hmac.new(s.secret, msg, hashlib.sha256).digest()
+        if not hmac.compare_digest(sig, good) or int(exp) < time.time():
+            raise HTTPException(401, "Session expired or invalid. Activate again.")
+        with db() as c:
+            row = c.execute("SELECT * FROM licenses WHERE license_key=?", (license_key,)).fetchone()
+        if not row or row["revoked"] or row["device_id"] != device_id or row["expires_at"] < time.time():
+            raise HTTPException(403, "Licence no longer valid for this device.")
+        return license_key, device_id
+
+    def require_admin(authorization: str = Header(default="")):
+        if not hmac.compare_digest(authorization.removeprefix("Bearer ").strip(), s.admin_token):
+            raise HTTPException(401, "Developer token required.")
+
+    def require_session(authorization: str = Header(default="")):
+        return verify_session(authorization.removeprefix("Bearer ").strip())
+
+    def session_response(row) -> dict:
+        exp = min(int(time.time()) + SESSION_SECONDS, int(row["expires_at"]))
+        return {
+            "status": "authorized",
+            "license_key": row["license_key"],
+            "licence_expires_at": int(row["expires_at"]),
+            "session": sign_session(row["license_key"], row["device_id"], exp),
+            "session_expires_at": exp,
+        }
+
+    # ------------------------------------------------------------------ models
+    class Activate(BaseModel):
+        license_key: str = Field(min_length=4, max_length=64)
+        device_id: str = Field(min_length=8, max_length=128)
+
+    class Redeem(BaseModel):
+        invite_token: str = Field(min_length=4, max_length=64)
+        device_id: str = Field(min_length=8, max_length=128)
+
+    class NewLicense(BaseModel):
+        days: int = Field(ge=1, le=36500)
+        note: str = ""
+
+    class NewInvite(BaseModel):
+        days: int = Field(ge=1, le=3650)
+
+    class NewConfig(BaseModel):
+        text: str = Field(max_length=4 * 1024 * 1024)
+
+    # ------------------------------------------------------------------ client API
+    @app.get("/")
+    def health():
+        return {"status": "online", "service": "diviora"}
+
+    @app.post("/api/v3/activate")
+    def activate(p: Activate):
+        key = p.license_key.strip().upper()
+        with db() as c:
+            row = c.execute("SELECT * FROM licenses WHERE license_key=?", (key,)).fetchone()
+            if not row:
+                raise HTTPException(401, "Unknown licence key.")
+            if row["revoked"]:
+                raise HTTPException(403, "This licence has been revoked.")
+            if row["expires_at"] < time.time():
+                raise HTTPException(403, "This licence has expired.")
+            if row["device_id"] and row["device_id"] != p.device_id:
+                raise HTTPException(403, "This licence is already bound to another device (one ID = one device).")
+            if not row["device_id"]:
+                c.execute("UPDATE licenses SET device_id=? WHERE license_key=?", (p.device_id, key))
+                row = c.execute("SELECT * FROM licenses WHERE license_key=?", (key,)).fetchone()
+        return session_response(row)
+
+    @app.post("/api/v3/redeem")
+    def redeem(p: Redeem):
+        token = p.invite_token.strip().upper()
+        with db() as c:
+            inv = c.execute("SELECT * FROM invites WHERE token=?", (token,)).fetchone()
+            if not inv:
+                raise HTTPException(401, "Unknown invite token.")
+            if inv["redeemed_by"]:
+                raise HTTPException(403, "This invite token has already been used.")
+            key = new_key("DVL")
+            now = int(time.time())
+            c.execute("INSERT INTO licenses VALUES (?,?,?,?,0,?)",
+                      (key, p.device_id, now, now + inv["days"] * 86400, f"invite {token}"))
+            c.execute("UPDATE invites SET redeemed_by=? WHERE token=?", (key, token))
+            row = c.execute("SELECT * FROM licenses WHERE license_key=?", (key,)).fetchone()
+        return session_response(row)
+
+    @app.get("/api/v3/config")
+    def get_config(since: int = 0, who=Depends(require_session)):
+        with db() as c:
+            row = c.execute("SELECT * FROM configs ORDER BY version DESC LIMIT 1").fetchone()
+        if not row:
+            return {"version": 0, "changed": False}
+        if row["version"] <= since:
+            return {"version": row["version"], "changed": False}
+        text = AESGCM(s.config_key).decrypt(row["nonce"], row["ciphertext"], str(row["version"]).encode()).decode()
+        return {"version": row["version"], "changed": True, "sha256": row["sha256"], "text": text}
+
+    # ------------------------------------------------------------------ developer API
+    @app.post("/api/v3/admin/licenses", dependencies=[Depends(require_admin)])
+    def create_license(p: NewLicense):
+        key, now = new_key("DVL"), int(time.time())
+        with db() as c:
+            c.execute("INSERT INTO licenses VALUES (?,?,?,?,0,?)", (key, None, now, now + p.days * 86400, p.note))
+        return {"license_key": key, "expires_at": now + p.days * 86400}
+
+    @app.get("/api/v3/admin/licenses", dependencies=[Depends(require_admin)])
+    def list_licenses():
+        with db() as c:
+            return [dict(r) for r in c.execute("SELECT * FROM licenses ORDER BY created_at DESC")]
+
+    @app.post("/api/v3/admin/licenses/{key}/revoke", dependencies=[Depends(require_admin)])
+    def revoke(key: str):
+        with db() as c:
+            if c.execute("UPDATE licenses SET revoked=1 WHERE license_key=?", (key,)).rowcount == 0:
+                raise HTTPException(404, "No such licence.")
+        return {"revoked": key}
+
+    @app.post("/api/v3/admin/licenses/{key}/reset-device", dependencies=[Depends(require_admin)])
+    def reset_device(key: str):
+        with db() as c:
+            if c.execute("UPDATE licenses SET device_id=NULL WHERE license_key=?", (key,)).rowcount == 0:
+                raise HTTPException(404, "No such licence.")
+        return {"reset": key}
+
+    @app.post("/api/v3/admin/invites", dependencies=[Depends(require_admin)])
+    def create_invite(p: NewInvite):
+        token = new_key("DVI")
+        with db() as c:
+            c.execute("INSERT INTO invites VALUES (?,?,?,NULL)", (token, p.days, int(time.time())))
+        return {"invite_token": token, "days": p.days}
+
+    @app.post("/api/v3/admin/config", dependencies=[Depends(require_admin)])
+    def publish_config(p: NewConfig):
+        digest = hashlib.sha256(p.text.encode()).hexdigest()
+        with db() as c:
+            cur = c.execute("INSERT INTO configs (created_at, sha256, nonce, ciphertext) VALUES (?,?,?,?)",
+                            (int(time.time()), digest, b"", b""))
+            version = cur.lastrowid
+            nonce = os.urandom(12)
+            ct = AESGCM(s.config_key).encrypt(nonce, p.text.encode(), str(version).encode())
+            c.execute("UPDATE configs SET nonce=?, ciphertext=? WHERE version=?", (nonce, ct, version))
+        return {"version": version, "sha256": digest}
+
+    return app
+
 
 if __name__ == "__main__":
-    # Fixed execution target assignment parameters to run via app instance directly
-    uvicorn.run(app, host="127.0.0.1", port=9000, reload=False)
+    import uvicorn
+    uvicorn.run(create_app(), host=os.environ.get("DIVIORA_HOST", "127.0.0.1"),
+                port=int(os.environ.get("DIVIORA_PORT", "9000")))

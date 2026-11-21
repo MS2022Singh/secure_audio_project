@@ -5,7 +5,7 @@ pub mod playback;
 pub mod drop;
 pub mod security;
 pub mod commands;
-pub mod apo_config;
+pub use diviora_client::apo_config;
 
 pub use playback::manager::PlaybackManager;
 
