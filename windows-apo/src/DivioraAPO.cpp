@@ -46,7 +46,12 @@ STDMETHODIMP DivioraAPO::QueryInterface(REFIID riid, void** ppv) {
         *ppv = static_cast<IAudioSystemEffects*>(this);
     else if (riid == __uuidof(IAudioSystemEffects2))
         *ppv = static_cast<IAudioSystemEffects2*>(this);
-    else { *ppv = nullptr; return E_NOINTERFACE; }
+    else {
+        static std::atomic<int> logged{0};
+        if (logged.fetch_add(1) < 16) DvrLog(L"APO::QueryInterface unsupported %s", DvrGuidStr(riid).s);
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
     AddRef();
     return S_OK;
 }

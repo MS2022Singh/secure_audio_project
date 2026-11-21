@@ -17,6 +17,7 @@ public:
             AddRef();
             return S_OK;
         }
+        DvrLog(L"ClassFactory::QueryInterface unsupported %s", DvrGuidStr(riid).s);
         *ppv = nullptr;
         return E_NOINTERFACE;
     }
@@ -27,6 +28,7 @@ public:
         return r;
     }
     STDMETHODIMP CreateInstance(IUnknown* pUnkOuter, REFIID riid, void** ppv) override {
+        DvrLog(L"CreateInstance called riid=%s outer=%p", DvrGuidStr(riid).s, pUnkOuter);
         if (!ppv) return E_POINTER;
         *ppv = nullptr;
         if (pUnkOuter) return CLASS_E_NOAGGREGATION;
@@ -50,14 +52,15 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv) {
     wchar_t exe[MAX_PATH] = L"?";
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
 #ifdef DIVIORA_CANARY
-    DvrLog(L"DllGetClassObject in %s (CANARY build: always -12 dB)", exe);
+    DvrLog(L"DllGetClassObject in %s riid=%s (CANARY build: always -12 dB)", exe, DvrGuidStr(riid).s);
 #else
-    DvrLog(L"DllGetClassObject in %s", exe);
+    DvrLog(L"DllGetClassObject in %s riid=%s", exe, DvrGuidStr(riid).s);
 #endif
     DivioraClassFactory* f = new (std::nothrow) DivioraClassFactory();
     if (!f) return E_OUTOFMEMORY;
     HRESULT hr = f->QueryInterface(riid, ppv);
     f->Release();
+    DvrLog(L"DllGetClassObject -> 0x%08lx", hr);
     return hr;
 }
 

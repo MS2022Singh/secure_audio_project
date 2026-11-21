@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <cstdarg>
 #include <cstdio>
+#include <objbase.h>
 
 inline void DvrLog(const wchar_t* fmt, ...) {
     wchar_t msg[512];
@@ -17,3 +18,9 @@ inline void DvrLog(const wchar_t* fmt, ...) {
     va_end(ap);
     OutputDebugStringW(msg);
 }
+
+// "{xxxxxxxx-...}" for logging interface/class IDs.
+struct DvrGuidStr {
+    wchar_t s[40];
+    explicit DvrGuidStr(REFGUID g) { if (!StringFromGUID2(g, s, 40)) s[0] = 0; }
+};
