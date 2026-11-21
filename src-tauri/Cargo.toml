@@ -3,30 +3,34 @@ name = "app"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2.0.0", features = [] }
 
 [dependencies]
 tauri = { version = "2.0.0", features = [] }
 tauri-plugin-dialog = "2.0.0"
-tauri-plugin-updater = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rodio = "0.17"
 walkdir = "2.4"
-sysinfo = "0.30"
 sha2 = "0.10"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 getrandom = "0.2"
 chrono = "0.4"
-reqwest = { version = "0.11", features = ["blocking"] }
 dirs = "5.0"
 
 diviora-dsp-core = { path = "../dsp-core" }
 diviora-dsp = { path = "../diviora-dsp" }
 diviora-client = { path = "../diviora-client" }
 
-winreg = "0.52"
 
 [target.'cfg(windows)'.dependencies]
+winreg = "0.52"
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"

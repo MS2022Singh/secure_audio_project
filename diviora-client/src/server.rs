@@ -19,10 +19,15 @@ pub struct ConfigResponse {
 }
 
 fn agent() -> ureq::Agent {
-    // Windows' own TLS stack and certificate store (Schannel).
-    let tls = native_tls::TlsConnector::new().map(std::sync::Arc::new);
     let b = ureq::AgentBuilder::new().timeout(Duration::from_secs(20));
-    match tls { Ok(t) => b.tls_connector(t).build(), Err(_) => b.build() }
+    #[cfg(windows)]
+    {
+        // Windows' own TLS stack and certificate store (Schannel).
+        if let Ok(t) = native_tls::TlsConnector::new() {
+            return b.tls_connector(std::sync::Arc::new(t)).build();
+        }
+    }
+    b.build()
 }
 
 fn err(e: ureq::Error) -> String {

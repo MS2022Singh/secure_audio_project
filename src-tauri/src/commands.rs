@@ -59,6 +59,49 @@ fn reapply_if_locked() -> Result<bool, String> {
     }
     Ok(false)
 }
+/// Developer configuration received from the licence server (activated devices).
+static SYNCED_CONFIG: Mutex<Option<String>> = Mutex::new(None);
+
+/// True when DivioraAPO is running inside audiodg.exe (it then processes all audio,
+/// including this player, so the player must not process again).
+fn system_apo_active() -> bool {
+    if !cfg!(windows) { return false; }
+    let fresh = std::fs::metadata(crate::apo_config::status_path()).and_then(|m| m.modified()).ok()
+        .and_then(|t| t.elapsed().ok()).map(|d| d.as_secs() < 5).unwrap_or(false);
+    fresh && crate::apo_config::read_status()
+        .and_then(|v| v.get("process").and_then(|p| p.as_str()).map(|p| p.eq_ignore_ascii_case("audiodg.exe")))
+        .unwrap_or(false)
+}
+
+/// Configuration for processing inside the app: the developer's own (developer PC), else
+/// the one published to this device. Some("") never returned.
+fn effective_config() -> Option<String> {
+    let local = compose_apo_payload();
+    if !local.trim().is_empty() { return Some(local); }
+    SYNCED_CONFIG.lock().unwrap().clone().filter(|t| !t.trim().is_empty())
+}
+
+fn config_cache_path() -> PathBuf { diviora_client::state::client_dir().join("app_config.txt") }
+
+/// Fetch the developer's configuration every 5 minutes for in-app processing. On Android it is
+/// cached in the app's private storage for offline use; on Windows it stays in memory only
+/// (the sync service locks it for the APO).
+pub fn start_background_config_sync() {
+    if cfg!(target_os = "android") {
+        if let Ok(t) = fs::read_to_string(config_cache_path()) { *SYNCED_CONFIG.lock().unwrap() = Some(t); }
+    }
+    std::thread::spawn(|| loop {
+        if let Ok(Some((_v, text))) = diviora_client::sync::fetch_latest_config() {
+            if cfg!(target_os = "android") {
+                let _ = fs::create_dir_all(diviora_client::state::client_dir());
+                let _ = fs::write(config_cache_path(), &text);
+            }
+            *SYNCED_CONFIG.lock().unwrap() = Some(text);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(300));
+    });
+}
+
 fn applied_note(applied: bool) -> &'static str {
     if applied { " Applied system-wide." } else { " Press Lock Config to apply system-wide." }
 }
@@ -203,8 +246,14 @@ pub fn trigger_hardware_audio_playback(start: bool, _handle: AppHandle, manager:
         if path_str.is_empty() {
             return Err("No audio file selected.".to_string());
         }
-        mgr.play_file(path_str.clone())?;
-        Ok(format!("Playback started: {}", path_str))
+        let process = if system_apo_active() { None } else { effective_config() };
+        let how = match (&process, system_apo_active()) {
+            (_, true) => "system-wide engine",
+            (Some(_), false) => "in-app processing",
+            (None, false) => "unprocessed: no configuration yet",
+        };
+        mgr.play_file(path_str.clone(), process)?;
+        Ok(format!("Playback started ({}): {}", how, path_str))
     } else {
         mgr.stop();
         Ok("Playback stopped".to_string())
@@ -271,12 +320,19 @@ pub fn sync_project_to_github(commit_msg: String) -> Result<String, String> {
 #[tauri::command]
 pub fn export_processed_audio_file(source_path: String, _manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
     let (mut samples, sr, ch) = decode_audio_file(&source_path)?;
-    let payload = compose_apo_payload();
+    let payload = effective_config().unwrap_or_default();
     let stages = diviora_dsp::analysis::process_file_samples(&payload, &mut samples, sr, ch as usize);
     let stem = std::path::Path::new(&source_path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "track".into());
-    let out = desktop_file(&format!("{}_DIVIORA_PROCESSED.wav", stem));
-    fs::write(&out, diviora_dsp::analysis::wav_f32(&samples, sr, ch)).map_err(|e| format!("Cannot write {}: {}", out.display(), e))?;
-    let wm = watermark_state().lock().unwrap().active;
+    let wav = diviora_dsp::analysis::wav_f32(&samples, sr, ch);
+    let out = if cfg!(target_os = "android") {
+        // Android: keep it in the app library (appears in the playlist).
+        PathBuf::from(crate::library::add_bytes(&format!("{}_DIVIORA_PROCESSED.wav", stem), &wav, true)?.path)
+    } else {
+        let out = desktop_file(&format!("{}_DIVIORA_PROCESSED.wav", stem));
+        fs::write(&out, &wav).map_err(|e| format!("Cannot write {}: {}", out.display(), e))?;
+        out
+    };
+    let wm = payload.contains("DivioraWatermark:");
     Ok(format!(
         "{} ({} stage(s) applied{}, {:.1} s, {} Hz, {} ch)",
         out.display(), stages, if wm { ", watermark embedded" } else { "" },
@@ -402,7 +458,7 @@ pub fn generate_watermark_audit_report(manager: State<'_, Arc<Mutex<PlaybackMana
             Err(e) => format!("Checked file: {}\nCould not analyse: {}", track, e),
         }
     };
-    let desktop_path = dirs::desktop_dir().unwrap_or_else(|| PathBuf::from("C:\\")).join("DIVIORA_Watermark_Audit_Report.txt");
+    let desktop_path = desktop_file("DIVIORA_Watermark_Audit_Report.txt");
     let wm = watermark_state().lock().unwrap();
     let report = format!(
         "DIVIORA WATERMARK SETTINGS REPORT\n\
@@ -422,9 +478,12 @@ pub fn generate_watermark_audit_report(manager: State<'_, Arc<Mutex<PlaybackMana
 #[tauri::command]
 pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
     let clsid = "{D1B100A1-8888-4444-9999-000000000001}";
+    #[cfg(windows)]
     let is_com_registered = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
         .open_subkey(format!("SOFTWARE\\Classes\\CLSID\\{}", clsid))
         .is_ok();
+    #[cfg(not(windows))]
+    let is_com_registered = { let _ = clsid; false };
     let has_locked_config = crate::apo_config::config_path().exists();
 
     // Written once a second by DivioraAPO.dll itself, from inside audiodg.exe.
@@ -675,4 +734,56 @@ pub fn apply_and_lock_dsp_config(config_json: String) -> Result<serde_json::Valu
         "active_file": active_file.to_string_lossy().to_string(),
         "loaded_revision": config.revision
     }))
+}
+// ---------------------------------------------------------------- music library
+
+/// Import one audio file into the library. The frontend sends the raw bytes as the request
+/// body and the file name in the `x-file-name` header (URI-encoded).
+#[tauri::command]
+pub fn import_track(request: tauri::ipc::Request<'_>) -> Result<crate::library::Track, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected the file contents as raw bytes.".into());
+    };
+    let name = request.headers().get("x-file-name").and_then(|v| v.to_str().ok())
+        .map(|v| percent_decode(v)).unwrap_or_else(|| "track".into());
+    // Must be playable audio.
+    rodio::Decoder::new(std::io::Cursor::new(bytes.clone()))
+        .map_err(|_| format!("{}: not a supported audio file (WAV, MP3, FLAC, OGG).", name))?;
+    crate::library::add_bytes(&name, bytes, false)
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() + 0 && i + 2 <= b.len() - 1 {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) { out.push(v); i += 3; continue; }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+#[tauri::command]
+pub fn list_library() -> Vec<crate::library::Track> {
+    crate::library::list()
+}
+
+#[tauri::command]
+pub fn delete_track(id: String) -> Result<bool, String> {
+    crate::library::remove(&id)
+}
+
+/// What this build can do, for the UI.
+#[tauri::command]
+pub fn platform_info() -> serde_json::Value {
+    serde_json::json!({
+        "os": std::env::consts::OS,
+        "mobile": cfg!(any(target_os = "android", target_os = "ios")),
+        "system_wide_supported": cfg!(windows),
+        "system_wide_active": system_apo_active(),
+        "activated": diviora_client::state::ClientState::load().is_activated(),
+    })
 }

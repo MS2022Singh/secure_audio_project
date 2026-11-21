@@ -593,14 +593,37 @@
         });
 
         document.getElementById('dropZoneMedia').addEventListener('click', () => document.getElementById('mediaFileInput').click());
+        // Picked files are copied into the app's library (kept until the user deletes them).
+        async function invokeRaw(command, bytes, headers) {
+            const core = (window.__TAURI__ && window.__TAURI__.core) || window.__TAURI_INTERNALS__;
+            return await core.invoke(command, bytes, { headers });
+        }
+        async function loadLibraryIntoPlaylist() {
+            try {
+                const tracks = await invokeCmd('list_library');
+                const known = new Set(playlistQueue.map(t => t.path));
+                tracks.forEach(t => { if (!known.has(t.path)) playlistQueue.push({ name: t.name, path: t.path, id: t.id }); });
+                renderPlaylistUI();
+            } catch (e) {}
+        }
+        window.addEventListener('DOMContentLoaded', loadLibraryIntoPlaylist);
+
         document.getElementById('mediaFileInput').addEventListener('change', async (e) => {
             const files = Array.from(e.target.files); if (!files.length) return;
-            files.forEach(f => {
-                playlistQueue.push({ name: f.name, path: f.path || f.name });
-            });
+            const firstNew = playlistQueue.length;
+            for (const f of files) {
+                try {
+                    const bytes = new Uint8Array(await f.arrayBuffer());
+                    const t = await invokeRaw('import_track', bytes, { 'x-file-name': encodeURIComponent(f.name) });
+                    playlistQueue.push({ name: t.name, path: t.path, id: t.id });
+                } catch (err) {
+                    alert("Could not add " + f.name + ": " + err);
+                }
+            }
+            e.target.value = "";
             renderPlaylistUI();
-            if (!isPlayingState) {
-                await playTrackIndex(playlistQueue.length - files.length);
+            if (!isPlayingState && playlistQueue.length > firstNew) {
+                await playTrackIndex(firstNew);
             }
         });
 
@@ -619,8 +642,15 @@
             `).join('');
         }
 
-        function removeTrackFromQueue(e, idx) {
+        async function removeTrackFromQueue(e, idx) {
             e.stopPropagation();
+            const item = playlistQueue[idx];
+            if (item && item.id) {
+                // Library file: deleting removes it from the device.
+                if (!confirm(`Delete "${item.name}" from your library? The file is removed from this device.`)) return;
+                try { await invokeCmd('delete_track', { id: item.id }); }
+                catch (err) { alert("Could not delete: " + err); return; }
+            }
             playlistQueue.splice(idx, 1);
             if (activeTrackIndex >= playlistQueue.length) activeTrackIndex = Math.max(0, playlistQueue.length - 1);
             renderPlaylistUI();
@@ -754,6 +784,7 @@
             try {
                 const exportPath = await invokeCmd('export_processed_audio_file', { sourcePath: currentLoadedTrackPath });
                 alert("Processed audio saved:\n" + exportPath);
+                loadLibraryIntoPlaylist();
             } catch (err) {
                 alert("Export failed: " + err);
             }

@@ -93,8 +93,7 @@ fn validate_new_password(p: &str) -> Result<(), String> {
 
 impl SecurityManager {
     pub fn get_sec_dir() -> PathBuf {
-        let pd = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
-        let p = PathBuf::from(pd).join("Diviora");
+        let p = diviora_client::state::base_dir();
         let _ = fs::create_dir_all(&p);
         p
     }

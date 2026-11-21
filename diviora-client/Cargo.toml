@@ -8,9 +8,15 @@ description = "Shared by the Diviora app and the diviora-sync service: locked AP
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-ureq = { version = "2", default-features = false, features = ["json", "native-tls"] }
-native-tls = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+# Windows: the system TLS stack and certificate store (Schannel).
+ureq = { version = "2", default-features = false, features = ["json", "native-tls"] }
+native-tls = "0.2"
 winreg = "0.52"
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography"] }
+
+[target.'cfg(not(windows))'.dependencies]
+# Android and others: rustls with bundled root certificates.
+ureq = { version = "2", features = ["json"] }
+getrandom = "0.2"

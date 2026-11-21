@@ -39,7 +39,9 @@ impl PlaybackManager {
         })
     }
 
-    pub fn play_file(&self, path_str: String) -> Result<(), String> {
+    /// `process`: configuration text to apply in the app (None = play unmodified, e.g. when the
+    /// system-wide APO already processes all audio).
+    pub fn play_file(&self, path_str: String, process: Option<String>) -> Result<(), String> {
         if path_str.starts_with("http://") || path_str.starts_with("https://") {
             let err = "Network stream playback is not supported. Load a local WAV file.".to_string();
             *self.status.lock().unwrap() = PlaybackStatus::Failed(err.clone());
@@ -84,7 +86,11 @@ impl PlaybackManager {
 
             if let Ok(file) = File::open(&track_path) {
                 if let Ok(source) = Decoder::new(BufReader::new(file)) {
-                    sink.append(source);
+                    use rodio::Source;
+                    match process {
+                        Some(cfg) => sink.append(crate::playback::processed::ProcessedSource::new(source.convert_samples::<f32>(), &cfg)),
+                        None => sink.append(source),
+                    }
                     sink.play();
 
                     while !sink.empty() && gen_ref.load(Ordering::Acquire) == new_gen {

@@ -24,9 +24,24 @@ pub struct ClientState {
     pub last_sync: String,
 }
 
-pub fn client_dir() -> PathBuf {
+static BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Mobile: use the app's private data folder instead of %ProgramData%\Diviora.
+pub fn set_base_dir(dir: PathBuf) {
+    let _ = BASE_DIR.set(dir);
+}
+
+/// %ProgramData%\Diviora on Windows, or the folder set with `set_base_dir`.
+pub fn base_dir() -> PathBuf {
+    if let Some(d) = BASE_DIR.get() {
+        return d.clone();
+    }
     let pd = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
-    PathBuf::from(pd).join("Diviora").join("client")
+    PathBuf::from(pd).join("Diviora")
+}
+
+pub fn client_dir() -> PathBuf {
+    base_dir().join("client")
 }
 
 pub fn state_path() -> PathBuf {
