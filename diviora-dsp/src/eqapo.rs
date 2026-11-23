@@ -85,6 +85,9 @@ pub enum FilterKind {
     /// First-order shelves (`LS 6dB` / `HS 6dB`).
     LowShelf1,
     HighShelf1,
+    /// First-order low/high pass (`LP1` / `HP1`).
+    LowPass1,
+    HighPass1,
     LowPass,
     HighPass,
     BandPass,
@@ -309,7 +312,9 @@ fn parse_into(
         };
         let cmd_full = line[..colon].trim();
         // "Filter 3" -> "filter"
+        // "Filter 3" / "Filter3" (some editors omit the space) -> "filter"
         let cmd = cmd_full.split_whitespace().next().unwrap_or("").to_lowercase();
+        let cmd = cmd.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
         let raw_args = line[colon + 1..].trim();
 
         // Conditional blocks, evaluated for the real output (sample rate, channels, device).
@@ -609,14 +614,16 @@ fn parse_biquad(toks: &[&str]) -> Result<Option<BiquadSpec>, String> {
     i += 1;
 
     let kind = match ty.as_str() {
-        "PK" | "PEQ" | "MODAL" => FilterKind::Peaking,
-        "LS" | "LSC" | "LSQ" => FilterKind::LowShelf,
-        "HS" | "HSC" | "HSQ" => FilterKind::HighShelf,
-        "LP" | "LPQ" => FilterKind::LowPass,
-        "HP" | "HPQ" => FilterKind::HighPass,
-        "BP" => FilterKind::BandPass,
-        "NO" => FilterKind::Notch,
-        "AP" => FilterKind::AllPass,
+        "PK" | "PEQ" | "PEAK" | "PEAKING" | "MODAL" | "EQ" => FilterKind::Peaking,
+        "LS" | "LSC" | "LSQ" | "LOWSHELF" => FilterKind::LowShelf,
+        "HS" | "HSC" | "HSQ" | "HIGHSHELF" => FilterKind::HighShelf,
+        "LP" | "LPQ" | "LPF" | "LOWPASS" => FilterKind::LowPass,
+        "HP" | "HPQ" | "HPF" | "HIGHPASS" => FilterKind::HighPass,
+        "LP1" | "LPF1" => FilterKind::LowPass1,
+        "HP1" | "HPF1" => FilterKind::HighPass1,
+        "BP" | "BPQ" | "BANDPASS" => FilterKind::BandPass,
+        "NO" | "NOTCH" => FilterKind::Notch,
+        "AP" | "APQ" | "ALLPASS" => FilterKind::AllPass,
         "NONE" => return Ok(None),
         other => return Err(format!("filter type '{}' not supported", other)),
     };
@@ -657,9 +664,19 @@ fn parse_biquad(toks: &[&str]) -> Result<Option<BiquadSpec>, String> {
         let key = toks[i].to_uppercase();
         match key.as_str() {
             "FC" => {
-                freq = toks.get(i + 1).and_then(|v| parse_num(v));
+                // "Fc 1000 Hz", "Fc 1000Hz", "Fc 1.2 kHz", "Fc 1.2kHz"
+                let raw = toks.get(i + 1).copied().unwrap_or("");
+                let low = raw.to_lowercase();
+                let (num, mut mult) = if let Some(n) = low.strip_suffix("khz") { (n, 1000.0) }
+                    else if let Some(n) = low.strip_suffix("hz") { (n, 1.0) } else { (low.as_str(), 1.0) };
+                let v = parse_num(num);
                 i += 2;
-                if toks.get(i).map(|u| u.eq_ignore_ascii_case("Hz")).unwrap_or(false) { i += 1; }
+                match toks.get(i).map(|u| u.to_lowercase()) {
+                    Some(u) if u == "hz" => i += 1,
+                    Some(u) if u == "khz" => { mult = 1000.0; i += 1; }
+                    _ => {}
+                }
+                freq = v.map(|f| f * mult);
             }
             "GAIN" => {
                 gain = toks.get(i + 1).and_then(|v| parse_db(v)).ok_or("bad Gain value")?;
@@ -826,6 +843,15 @@ mod tests {
             }
             s => panic!("{:?}", s),
         }
+    }
+
+    #[test]
+    fn editor_variants() {
+        let cfg = parse("Filter1: ON PK Fc 1000Hz Gain 3dB Q 1.41\nFilter 2: ON PK Fc 1.2 kHz Gain -2 dB Q 2\nFilter3: ON LP1 Fc 18kHz\nFilter: ON NOTCH Fc 50 Hz Q 30\n", None);
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        assert_eq!(cfg.stages.len(), 4);
+        match &cfg.stages[1].1 { Stage::Biquad { spec, .. } => assert_eq!(spec.freq, 1200.0), s => panic!("{:?}", s) }
+        match &cfg.stages[2].1 { Stage::Biquad { spec, .. } => assert_eq!((spec.kind, spec.freq), (FilterKind::LowPass1, 18000.0)), s => panic!("{:?}", s) }
     }
 
     #[test]

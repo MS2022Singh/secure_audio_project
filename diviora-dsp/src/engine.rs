@@ -34,6 +34,13 @@ impl Coefs {
             }
         };
         let sa = 2.0 * a.sqrt() * alpha;
+        // First-order low/high pass (bilinear transform).
+        if matches!(spec.kind, FilterKind::LowPass1 | FilterKind::HighPass1) {
+            let t = (PI * f / sample_rate).tan();
+            let (b0, b1) = if spec.kind == FilterKind::LowPass1 { (t, t) } else { (1.0, -1.0) };
+            let (a0, a1) = (1.0 + t, t - 1.0);
+            return Coefs { b0: b0 / a0, b1: b1 / a0, b2: 0.0, a1: a1 / a0, a2: 0.0 };
+        }
         // First-order shelves (bilinear transform, transition centred on Fc).
         if matches!(spec.kind, FilterKind::LowShelf1 | FilterKind::HighShelf1) {
             let t = (PI * f / sample_rate).tan();
@@ -69,7 +76,7 @@ impl Coefs {
             FilterKind::BandPass => (alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
             FilterKind::Notch => (1.0, -2.0 * cs, 1.0, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
             FilterKind::AllPass => (1.0 - alpha, -2.0 * cs, 1.0 + alpha, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
-            FilterKind::LowShelf1 | FilterKind::HighShelf1 => unreachable!(),
+            FilterKind::LowShelf1 | FilterKind::HighShelf1 | FilterKind::LowPass1 | FilterKind::HighPass1 => unreachable!(),
         };
         Coefs { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 }
     }

@@ -298,7 +298,13 @@
                         ● Upload a configuration file, then press Lock Config.
                     </div>
 
-                    <pre id="boxApoWarnings" style="display:none; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; background: #1a0f12; border: 1px solid var(--error-red); color: #ffb3bd; border-radius: 6px; padding: 10px 12px; font-size: 12px; margin: 0 0 14px 0; user-select: text;"></pre>
+                    <div id="boxApoWarningsWrap" style="display:none;">
+                    <div style="display:flex; justify-content: space-between; align-items:center; margin-bottom: 6px;">
+                        <span style="font-size: 12.5px; color: #ffb3bd; font-weight: 700;">Lines not converted (numbers hidden as # so this can be shared)</span>
+                        <button class="btn-dark" id="btnToggleWarnValues" style="padding: 6px 12px; font-size: 12px;">Show values</button>
+                    </div>
+                    <pre id="boxApoWarnings" style="white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; background: #1a0f12; border: 1px solid var(--error-red); color: #ffb3bd; border-radius: 6px; padding: 10px 12px; font-size: 12px; margin: 0 0 14px 0; user-select: text;"></pre>
+                    </div>
                     <div id="boxDllTelemetry" class="telemetry-bar">
                         • AUDIODG HOOK STATUS: checking…
                     </div>
@@ -986,6 +992,26 @@
             } catch (err) { alert("Could not clear watermark audio: " + err); }
         });
 
+        // Unsupported-line list: numbers hidden by default so it can be shared without the config.
+        let apoWarningsText = "";
+        let apoWarningsRevealed = false;
+        function maskConfigValues(t) {
+            return t.split('\n').map(line => {
+                // "• config:12: <line> — <reason>": keep the location, mask values in the line.
+                const m = line.match(/^(•\s*[^:]*:\d+:\s*)(.*?)(\s—\s.*)?$/);
+                const mask = (x) => x.replace(/"[^"]*"/g, '"…"').replace(/[-+]?\d+([.,]\d+)?(e[-+]?\d+)?/gi, '#');
+                if (!m) return mask(line);
+                return m[1] + mask(m[2]) + (m[3] ? mask(m[3]) : '');
+            }).join('\n');
+        }
+        function showApoWarnings(reveal) {
+            apoWarningsRevealed = reveal;
+            document.getElementById('boxApoWarnings').innerText = reveal ? apoWarningsText : maskConfigValues(apoWarningsText);
+            document.getElementById('btnToggleWarnValues').innerText = reveal ? "Hide values" : "Show values";
+            document.getElementById('boxApoWarningsWrap').style.display = 'block';
+        }
+        document.getElementById('btnToggleWarnValues').addEventListener('click', () => showApoWarnings(!apoWarningsRevealed));
+
         // New developer password file.
         document.getElementById('btnMakeDevPass').addEventListener('click', async () => {
             try {
@@ -1150,14 +1176,14 @@
             catch (err) { alert("Upload failed: " + err); e.target.value = ""; return; }
             e.target.value = "";
             setTimeout(updateDynamicEstimatedProperties, 300);
-            const wbox = document.getElementById('boxApoWarnings');
             const nl = msg.indexOf('\n');
             if (nl >= 0) {
-                wbox.innerText = msg.slice(nl + 1);
-                wbox.style.display = 'block';
-                alert(msg.slice(0, nl) + "\nSome lines are not supported: the full list is shown below the upload box.");
+                apoWarningsText = msg.slice(nl + 1);
+                showApoWarnings(false);
+                alert(msg.slice(0, nl) + "\nSome lines are not supported: the list is shown below the upload box (values hidden, safe to screenshot).");
             } else {
-                wbox.style.display = 'none';
+                apoWarningsText = "";
+                document.getElementById('boxApoWarningsWrap').style.display = 'none';
             }
             document.getElementById('toggleApoEnableConfig').checked = true;
             document.getElementById('lblApoToggleStatus').innerText = "ENABLED";

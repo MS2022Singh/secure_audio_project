@@ -95,6 +95,8 @@ pub fn emit(stages: &[Stage], opt: &CamillaOptions, header_comment: &str) -> Str
                     FilterKind::AllPass => "Allpass",
                     FilterKind::LowShelf1 => "LowshelfFO",
                     FilterKind::HighShelf1 => "HighshelfFO",
+                    FilterKind::LowPass1 => "LowpassFO",
+                    FilterKind::HighPass1 => "HighpassFO",
                 };
                 let _ = writeln!(filters, "  {}:\n    type: Biquad\n    parameters:\n      type: {}\n      freq: {}", name, ty, num(spec.freq));
                 if matches!(spec.kind, FilterKind::Peaking | FilterKind::LowShelf | FilterKind::HighShelf) {
