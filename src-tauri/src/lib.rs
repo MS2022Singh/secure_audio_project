@@ -89,7 +89,8 @@ pub fn run() {
             commands::delete_track,
             commands::platform_info,
             commands::licence_status,
-            commands::lock_developer_session
+            commands::lock_developer_session,
+            commands::pause_playback
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

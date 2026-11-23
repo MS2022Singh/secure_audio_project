@@ -216,7 +216,7 @@
                             <h4 style="margin:0 0 10px 0; font-size: 13px; color: var(--purple-text);">Settings</h4>
                             <div style="margin-bottom: 8px;">
                                 <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 4px;">Start from:</label>
-                                <select id="selStartFrom">
+                                <select id="selStartFrom" title="config.txt = the uploaded file; master_matrix.txt = what Windows audio runs (configuration + watermark)">
                                     <option value="config.txt">config.txt</option>
                                     <option value="master_matrix.txt">master_matrix.txt</option>
                                 </select>
@@ -236,7 +236,7 @@
                             </div>
                             <div>
                                 <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 4px;">Resolution:</label>
-                                <input type="number" id="numResolution" value="8388608" placeholder="Custom resolution (e.g. 8388608)" />
+                                <input type="number" id="numResolution" title="Frequency points evaluated (64 to 16384)" value="8388608" placeholder="Custom resolution (e.g. 8388608)" />
                             </div>
                         </div>
 
@@ -505,11 +505,33 @@
             input.style.display = sel.includes('Custom') ? 'block' : 'none';
         }
 
+        // Analysis options from the panel: device, channel layout, start from, channel, resolution.
+        function analysisOptions() {
+            const layout = document.getElementById('selChannelConfig').value;
+            let channels = 2;
+            if (layout.includes('7.1')) channels = 8;
+            else if (layout.includes('5.1')) channels = 6;
+            else if (layout.includes('Custom')) channels = parseInt(document.getElementById('txtCustomChannelArray').value) || 8;
+            const order = ['L', 'R', 'C', 'LFE', 'Lb', 'Rb', 'Ls', 'Rs'];
+            const ch = order.indexOf(document.getElementById('selChannelSelect').value);
+            const dev = document.getElementById('selDetectedDevices').value || null;
+            return {
+                sampleRate: 48000,
+                channels: Math.min(Math.max(channels, 1), 8),
+                device: dev,
+                onlyChannel: ch >= 0 && ch < channels ? ch : null,
+                points: Math.min(Math.max(parseInt(document.getElementById('numResolution').value) || 400, 64), 16384),
+                source: document.getElementById('selStartFrom').value === 'master_matrix.txt' ? 'applied' : 'uploaded',
+            };
+        }
+        ['selChannelConfig', 'selChannelSelect', 'selStartFrom', 'selDetectedDevices', 'numResolution', 'txtCustomChannelArray'].forEach(id =>
+            document.getElementById(id).addEventListener('change', () => { if (isMasterAuthenticated) updateDynamicEstimatedProperties(); }));
+
         // Estimated properties, measured by the backend on the uploaded configuration
         // (peak gain of the filter chain, added latency, compile time, CPU per core).
         async function updateDynamicEstimatedProperties() {
             try {
-                const a = await invokeCmd('analyze_apo_profile', { sampleRate: 48000, channels: 2, device: null });
+                const a = await invokeCmd('analyze_apo_profile', analysisOptions());
                 document.getElementById('valPeakGain').innerText = `${a.peak_gain_db.toFixed(1)} dB` + (a.stages ? ` (at ${Math.round(a.peak_freq_hz)} Hz)` : '');
                 document.getElementById('valLatency').innerText = `${a.latency_ms.toFixed(1)} ms (${(a.latency_ms / 1000).toFixed(2)} s.)`;
                 document.getElementById('valInitTime').innerText = `${a.init_ms.toFixed(1)} ms`;
@@ -638,6 +660,29 @@
             document.getElementById('modalResetOverlay').style.display = 'none';
         });
 
+        // Show/hide buttons for password boxes.
+        document.querySelectorAll('input[type="password"]').forEach(inp => {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'position: relative; ' + (inp.style.marginBottom ? 'margin-bottom:' + inp.style.marginBottom + ';' : '');
+            inp.style.marginBottom = '0';
+            inp.style.paddingRight = '44px';
+            inp.style.boxSizing = 'border-box';
+            inp.parentNode.insertBefore(wrap, inp);
+            wrap.appendChild(inp);
+            const eye = document.createElement('button');
+            eye.type = 'button';
+            eye.textContent = '👁';
+            eye.title = 'Show / hide';
+            eye.setAttribute('aria-label', 'Show or hide the password');
+            eye.style.cssText = 'position:absolute; right:6px; top:50%; transform:translateY(-50%); background:transparent; border:none; padding:6px 8px; cursor:pointer; font-size:16px; opacity:0.6; color:#fff;';
+            eye.addEventListener('click', () => {
+                const show = inp.type === 'password';
+                inp.type = show ? 'text' : 'password';
+                eye.style.opacity = show ? '1' : '0.6';
+            });
+            wrap.appendChild(eye);
+        });
+
         // Master Security Login
         document.getElementById('txtMasterPassword').addEventListener('keydown', (e) => {
             if (e.key === 'Enter') document.getElementById('btnAuthenticateMaster').click();
@@ -731,7 +776,7 @@
             const box = document.getElementById('boxPlaylistDeck');
             document.getElementById('lblQueueCount').innerText = playlistQueue.length + " Tracks";
             if (!playlistQueue.length) {
-                box.innerHTML = `<div style="font-size: 11.5px; color: var(--text-muted);">No tracks loaded. Drag audio files above to queue.</div>`;
+                box.innerHTML = `<div style="font-size: 11.5px; color: var(--text-muted);">No tracks loaded. ${document.body.classList.contains('mobile') ? 'Tap the box below to add audio files.' : 'Drag audio files here or click the box to add them.'}</div>`;
                 return;
             }
             box.innerHTML = playlistQueue.map((item, idx) => `
@@ -756,44 +801,86 @@
             renderPlaylistUI();
         }
 
+        let isPausedState = false;
+        let currentTrackName = "";
+        let silentSince = 0;
+        function setPlayerLabel(text, color) {
+            const l = document.getElementById('lblAudioStreamSource');
+            l.innerText = text;
+            l.style.color = color || 'var(--primary-green)';
+        }
+        function setPlayButton() {
+            document.getElementById('btnTogglePlayPause').innerText = (isPlayingState && !isPausedState) ? "⏸ Pause" : "▶ Play";
+        }
+
         async function playTrackIndex(idx) {
             if (!playlistQueue[idx]) return;
             activeTrackIndex = idx;
             renderPlaylistUI();
             currentLoadedTrackPath = playlistQueue[idx].path;
-            
-            const displayName = await invokeCmd('set_native_track_path', { path: currentLoadedTrackPath });
-            document.getElementById('lblAudioStreamSource').innerText = "Playing Track: " + displayName;
-            await invokeCmd('trigger_hardware_audio_playback', { start: true });
-            isPlayingState = true;
-            document.getElementById('btnTogglePlayPause').innerText = "⏸ Pause";
+            try {
+                currentTrackName = await invokeCmd('set_native_track_path', { path: currentLoadedTrackPath });
+                await invokeCmd('trigger_hardware_audio_playback', { start: true });
+                isPlayingState = true;
+                isPausedState = false;
+                silentSince = 0;
+                setPlayerLabel("Playing: " + currentTrackName);
+            } catch (err) {
+                isPlayingState = false;
+                isPausedState = false;
+                setPlayerLabel("✖ " + err, 'var(--error-red)');
+            }
+            setPlayButton();
         }
 
         // UNIFIED PLAY/PAUSE, STOP, PREV, NEXT CONTROLS
         document.getElementById('btnTogglePlayPause').addEventListener('click', async () => {
-            if (!currentLoadedTrackPath && playlistQueue.length > 0) {
-                await playTrackIndex(0);
-                return;
-            }
-            if (isPlayingState) {
-                await invokeCmd('trigger_hardware_audio_playback', { start: false });
-                isPlayingState = false;
-                document.getElementById('btnTogglePlayPause').innerText = "▶ Play";
-                document.getElementById('lblAudioStreamSource').innerText = "Playback Paused";
-            } else {
-                await invokeCmd('trigger_hardware_audio_playback', { start: true });
-                isPlayingState = true;
-                document.getElementById('btnTogglePlayPause').innerText = "⏸ Pause";
-                document.getElementById('lblAudioStreamSource').innerText = "Playing Track: " + currentLoadedTrackPath.split('\\').pop();
-            }
+            if (!playlistQueue.length) { alert("Add audio files first (click the box above)."); return; }
+            if (!isPlayingState) { await playTrackIndex(activeTrackIndex || 0); return; }
+            isPausedState = !isPausedState;
+            try { await invokeCmd('pause_playback', { paused: isPausedState }); } catch (e) {}
+            setPlayerLabel((isPausedState ? "Paused: " : "Playing: ") + currentTrackName);
+            setPlayButton();
         });
 
         document.getElementById('btnStopPlayback').addEventListener('click', async () => {
-            await invokeCmd('trigger_hardware_audio_playback', { start: false });
+            try { await invokeCmd('trigger_hardware_audio_playback', { start: false }); } catch (e) {}
             isPlayingState = false;
-            document.getElementById('btnTogglePlayPause').innerText = "▶ Play";
-            document.getElementById('lblAudioStreamSource').innerText = "Playback Stopped";
+            isPausedState = false;
+            setPlayButton();
+            setPlayerLabel("Playback Stopped", 'var(--text-muted)');
         });
+
+        // Live player status: position, how the audio is processed, output device, level,
+        // errors from the audio thread, and moving on to the next track at the end.
+        function fmtTime(s) { s = Math.floor(s); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, '0'); }
+        setInterval(async () => {
+            if (!isPlayingState) return;
+            let st;
+            try { st = await invokeCmd('check_playback_queue_status'); } catch (e) { return; }
+            if (st.state === 'failed') {
+                isPlayingState = false; isPausedState = false; setPlayButton();
+                setPlayerLabel("✖ " + st.error, 'var(--error-red)');
+                return;
+            }
+            if (st.state === 'finished') {
+                if (currentLoadedTrackPath !== 'trigger_test_tone' && activeTrackIndex + 1 < playlistQueue.length) {
+                    await playTrackIndex(activeTrackIndex + 1);
+                } else {
+                    isPlayingState = false; setPlayButton();
+                    setPlayerLabel("Finished: " + currentTrackName, 'var(--text-muted)');
+                }
+                return;
+            }
+            if (st.state !== 'playing') return;
+            const lvl = st.level_db > -100 ? st.level_db.toFixed(0) + " dB" : "silent";
+            if (st.level_db > -100) silentSince = 0; else if (!silentSince) silentSince = Date.now();
+            let text = `Playing: ${currentTrackName} · ${fmtTime(st.position_s)} · ${st.mode} · Output: ${st.output_device} · Level: ${lvl}`;
+            if (silentSince && Date.now() - silentSince > 3000) {
+                text += " (no signal: this part of the file is silent, or the configuration mutes it)";
+            }
+            setPlayerLabel(text);
+        }, 500);
 
         document.getElementById('btnNextTrack').addEventListener('click', async () => {
             if (playlistQueue.length === 0) return;
@@ -844,20 +931,32 @@
                 document.getElementById('lblApoScriptStatus').style.color = "var(--text-muted)";
             }
 
-            await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: isEnabled });
+            try { await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: isEnabled }); }
+            catch (err) { alert("Could not change the equalizer state: " + err); }
         });
 
         // Lock Config
         document.getElementById('btnLockApoConfig').addEventListener('click', async () => {
-            await invokeCmd('enforce_global_hardware_apo');
-            alert("Master System Processing Matrix Enforced to System Storage.");
+            try {
+                const msg = await invokeCmd('enforce_global_hardware_apo');
+                document.getElementById('lblApoScriptStatus').innerText = "● Locked and applied system-wide";
+                document.getElementById('lblApoScriptStatus').style.color = "var(--primary-green)";
+                alert(msg);
+            } catch (err) {
+                alert("Lock Config failed: " + err + (String(err).toLowerCase().includes('access') ? "\n\nRun Diviora as Administrator (right-click → Run as administrator) to lock a configuration." : ""));
+            }
         });
 
         // Free Access Token Generator
         document.getElementById('btnGenerateInviteToken').addEventListener('click', async () => {
             const days = parseInt(document.getElementById('numTokenValidDays').value) || 30;
-            const token = await invokeCmd('generate_invite_token', { daysValid: days });
-            document.getElementById('txtGeneratedTokenDisplay').value = token;
+            try {
+                const token = await invokeCmd('generate_invite_token', { daysValid: days });
+                document.getElementById('txtGeneratedTokenDisplay').value = token;
+            } catch (err) {
+                document.getElementById('txtGeneratedTokenDisplay').value = "";
+                alert("Could not create an invite: " + err);
+            }
         });
 
         // Watermark Signature Uploader
@@ -877,8 +976,8 @@
 
         // Download Audio Button
         document.getElementById('btnExportProcessedTrack').addEventListener('click', async () => {
-            if (!currentLoadedTrackPath) {
-                alert("Please drag and drop an audio track first.");
+            if (!currentLoadedTrackPath || currentLoadedTrackPath === 'trigger_test_tone') {
+                alert("Play a track from the playlist first, then download its processed version.");
                 return;
             }
             try {
@@ -896,8 +995,12 @@
             const file = e.target.files[0]; if (!file) return;
             activeApoProfilePayload = await file.text();
             activeApoFileName = file.name;
+            let msg;
+            try { msg = await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: true }); }
+            catch (err) { alert("Upload failed: " + err); e.target.value = ""; return; }
+            e.target.value = "";
             setTimeout(updateDynamicEstimatedProperties, 300);
-            await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: true });
+            if (msg.includes('not supported')) alert(msg);
             document.getElementById('toggleApoEnableConfig').checked = true;
             document.getElementById('lblApoToggleStatus').innerText = "ENABLED";
             document.getElementById('lblApoToggleStatus').style.color = "var(--primary-green)";
@@ -910,7 +1013,8 @@
 
         document.getElementById('btnRemoveApoFile').addEventListener('click', async () => {
             activeApoProfilePayload = "REMOVE";
-            await invokeCmd('upload_apo_profile', { profileData: "REMOVE", isEnabled: false });
+            try { await invokeCmd('upload_apo_profile', { profileData: "REMOVE", isEnabled: false }); }
+            catch (err) { alert("Could not remove: " + err); return; }
             document.getElementById('toggleApoEnableConfig').checked = false;
             document.getElementById('lblApoToggleStatus').innerText = "DISABLED";
             document.getElementById('lblApoToggleStatus').style.color = "var(--error-red)";
@@ -935,18 +1039,31 @@
         document.getElementById('toggleTestTone').addEventListener('change', async (e) => {
             const active = e.target.checked;
             document.getElementById('lblToneStatus').innerText = active ? "PLAYING 440Hz TONE" : "MUTED";
-            if (active) {
-                await invokeCmd('set_native_track_path', { path: "trigger_test_tone" });
-                await invokeCmd('trigger_hardware_audio_playback', { start: true });
-            } else {
-                await invokeCmd('trigger_hardware_audio_playback', { start: false });
+            try {
+                if (active) {
+                    await invokeCmd('set_native_track_path', { path: "trigger_test_tone" });
+                    await invokeCmd('trigger_hardware_audio_playback', { start: true });
+                    currentLoadedTrackPath = "trigger_test_tone";
+                    currentTrackName = "440 Hz test tone";
+                    isPlayingState = true; isPausedState = false; setPlayButton();
+                } else {
+                    await invokeCmd('trigger_hardware_audio_playback', { start: false });
+                    isPlayingState = false; setPlayButton();
+                    setPlayerLabel("Playback Stopped", 'var(--text-muted)');
+                }
+            } catch (err) {
+                e.target.checked = false;
+                document.getElementById('lblToneStatus').innerText = "MUTED";
+                alert("Test tone failed: " + err);
             }
         });
 
         // Report Handlers
         document.getElementById('btnDownloadApoReport').addEventListener('click', async () => {
-            const path = await invokeCmd('generate_apo_verification_report', { configData: activeApoProfilePayload });
-            alert("Report saved to Desktop:\n" + path);
+            try {
+                const path = await invokeCmd('generate_apo_verification_report', { configData: "" });
+                alert("Report saved:\n" + path);
+            } catch (err) { alert("Report failed: " + err); }
         });
 
         document.getElementById('btnExportPs1Script').addEventListener('click', async () => {
@@ -975,8 +1092,10 @@
         });
 
         document.getElementById('btnDownloadWmReport').addEventListener('click', async () => {
-            const path = await invokeCmd('generate_watermark_audit_report');
-            alert("Watermark Report saved to Desktop:\n" + path);
+            try {
+                const path = await invokeCmd('generate_watermark_audit_report');
+                alert("Watermark report saved:\n" + path);
+            } catch (err) { alert("Report failed: " + err); }
         });
 
         // Watermark Handlers

@@ -23,6 +23,15 @@ pub struct Analysis {
 
 /// Analyse configuration text for a given output format.
 pub fn analyze(text: &str, sample_rate: u32, channels: usize, device: Option<&str>) -> Analysis {
+    analyze_with(text, sample_rate, channels, device, None, 400)
+}
+
+/// Like [`analyze`], with the developer panel's analysis options: `only_channel` limits the
+/// peak-gain search to one channel (0 = L, 1 = R, ...; None = all), and `points` is the number
+/// of frequency points evaluated between 10 Hz and 20 kHz (the "Resolution", clamped to
+/// 64..=65536).
+pub fn analyze_with(text: &str, sample_rate: u32, channels: usize, device: Option<&str>,
+                    only_channel: Option<usize>, points: usize) -> Analysis {
     let cfg = eqapo::parse(text, None);
     let stages = match device {
         Some(d) if !d.is_empty() => cfg.stages_for_device(d),
@@ -33,13 +42,17 @@ pub fn analyze(text: &str, sample_rate: u32, channels: usize, device: Option<&st
 
     // Peak gain: sum of per-channel stage responses on a log frequency grid.
     let (mut peak, mut peak_f) = (f64::NEG_INFINITY, 1000.0);
-    let points = 400;
+    let points = points.clamp(64, 65536);
+    let chans: Vec<usize> = match only_channel {
+        Some(c) if c < ch => vec![c],
+        _ => (0..ch).collect(),
+    };
     for i in 0..points {
         let f = 10.0 * (20000.0f64 / 10.0).powf(i as f64 / (points - 1) as f64);
         if f >= sr * 0.49 {
             break;
         }
-        for c in 0..ch {
+        for &c in &chans {
             let mut db = 0.0;
             for s in &stages {
                 match s {
@@ -148,5 +161,20 @@ mod tests {
         assert_eq!(&w[8..16], b"WAVEfmt ");
         assert_eq!(u16::from_le_bytes([w[20], w[21]]), 3);
         assert_eq!(w.len(), 44 + 960 * 4);
+    }
+}
+
+#[cfg(test)]
+mod analyze_with_tests {
+    use super::*;
+
+    #[test]
+    fn channel_and_resolution_options() {
+        let cfg = "Channel: L\nFilter: ON PK Fc 1000 Hz Gain 9 dB Q 1\nChannel: R\nFilter: ON PK Fc 1000 Hz Gain 3 dB Q 1\n";
+        let all = analyze_with(cfg, 48000, 2, None, None, 4000);
+        let right = analyze_with(cfg, 48000, 2, None, Some(1), 4000);
+        assert!((all.peak_gain_db - 9.0).abs() < 0.1, "{}", all.peak_gain_db);
+        assert!((right.peak_gain_db - 3.0).abs() < 0.1, "{}", right.peak_gain_db);
+        assert_eq!(analyze(cfg, 48000, 2, None).stages, all.stages);
     }
 }

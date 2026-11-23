@@ -34,10 +34,9 @@ fn require_developer() -> Result<(), String> {
 
 #[tauri::command]
 pub fn detect_audio_hardware_devices() -> Result<Vec<String>, String> {
-    Ok(vec![
-        "Speakers (2- Realtek(R) Audio) (Default)".to_string(),
-        "CABLE Input (VB-Audio Virtual Cable)".to_string(),
-    ])
+    // Real output devices from the system (Windows audio / Android), default first.
+    let devs = crate::playback::manager::output_device_names();
+    if devs.is_empty() { Err("No audio output device found.".into()) } else { Ok(devs) }
 }
 
 // Master config staged in memory only; written to disk solely as the encrypted,
@@ -244,10 +243,19 @@ pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: Stat
 
 /// Measured "Estimated properties" for the uploaded configuration.
 #[tauri::command]
-pub fn analyze_apo_profile(sample_rate: Option<u32>, channels: Option<u32>, device: Option<String>) -> Result<serde_json::Value, String> {
+pub fn analyze_apo_profile(sample_rate: Option<u32>, channels: Option<u32>, device: Option<String>,
+    only_channel: Option<u32>, points: Option<u32>, source: Option<String>) -> Result<serde_json::Value, String> {
     require_developer()?;
-    let text = STAGED_PROFILE.lock().unwrap().clone().unwrap_or_default();
-    let a = diviora_dsp::analysis::analyze(&text, sample_rate.unwrap_or(48000), channels.unwrap_or(2) as usize, device.as_deref());
+    // "applied": what the APO runs (equalizer + watermark); otherwise the uploaded file.
+    let text = if source.as_deref() == Some("applied") {
+        compose_apo_payload()
+    } else {
+        STAGED_PROFILE.lock().unwrap().clone().unwrap_or_default()
+    };
+    // Device names in the list carry " (Default)"; config Device: lines match the plain name.
+    let dev = device.map(|d| d.trim_end_matches(" (Default)").to_string());
+    let a = diviora_dsp::analysis::analyze_with(&text, sample_rate.unwrap_or(48000), channels.unwrap_or(2) as usize,
+        dev.as_deref(), only_channel.map(|c| c as usize), points.unwrap_or(400) as usize);
     Ok(serde_json::json!({
         "peak_gain_db": a.peak_gain_db, "peak_freq_hz": a.peak_freq_hz, "latency_ms": a.latency_ms,
         "init_ms": a.init_ms, "cpu_percent": a.cpu_percent, "stages": a.stages, "warnings": a.warnings
@@ -262,7 +270,16 @@ pub fn set_native_track_path(path: String, manager: State<'_, Arc<Mutex<Playback
     if let Ok(mut track_guard) = mutex_lock.current_track_path.lock() {
         *track_guard = path.clone();
     }
-    Ok(format!("Track set: {}", path))
+    let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path);
+    Ok(name)
+}
+
+/// Pause (true) or resume (false) the current track at its position.
+#[tauri::command]
+pub fn pause_playback(paused: bool, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<bool, String> {
+    let mgr = manager.inner().lock().unwrap();
+    mgr.set_paused(paused);
+    Ok(paused)
 }
 
 #[tauri::command]
@@ -282,7 +299,7 @@ pub fn trigger_hardware_audio_playback(start: bool, _handle: AppHandle, manager:
             (Some(_), false) => "in-app processing",
             (None, false) => "unprocessed: no configuration yet",
         };
-        mgr.play_file(path_str.clone(), process)?;
+        mgr.play_file(path_str.clone(), process, how)?;
         Ok(format!("Playback started ({}): {}", how, path_str))
     } else {
         mgr.stop();
@@ -637,21 +654,32 @@ pub fn verify_watermark_in_file(path: String) -> Result<serde_json::Value, Strin
 
 #[tauri::command]
 pub fn check_playback_queue_status(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<serde_json::Value, String> {
-    let mgr = manager.inner();
-    let mutex_lock = mgr.lock().unwrap();
-    let status_guard = mutex_lock.status.lock().unwrap();
-    let is_playing = matches!(*status_guard, PlaybackStatus::Playing(_));
-    Ok(serde_json::json!({ "is_active": is_playing }))
+    let mgr = manager.inner().lock().unwrap();
+    let status = mgr.status.lock().unwrap().clone();
+    let (state, detail) = match &status {
+        PlaybackStatus::Idle => ("idle", String::new()),
+        PlaybackStatus::Playing(_) if mgr.is_paused() => ("paused", String::new()),
+        PlaybackStatus::Playing(_) => ("playing", String::new()),
+        PlaybackStatus::Stopped => ("stopped", String::new()),
+        PlaybackStatus::Finished => ("finished", String::new()),
+        PlaybackStatus::Failed(e) => ("failed", e.clone()),
+    };
+    let peak = mgr.peak();
+    let level_db = if peak > 1e-6 { 20.0 * (peak as f64).log10() } else { -120.0 };
+    Ok(serde_json::json!({
+        "is_active": state == "playing",
+        "state": state,
+        "error": detail,
+        "output_device": mgr.output_device.lock().unwrap().clone(),
+        "mode": mgr.mode.lock().unwrap().clone(),
+        "level_db": level_db,
+        "position_s": mgr.position_secs(),
+    }))
 }
 
 #[tauri::command]
 pub fn get_live_amplitude_metrics(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<f32, String> {
-    let mgr = manager.inner();
-    let mutex_lock = mgr.lock().unwrap();
-    if let Ok(amp) = mutex_lock.active_amplitude.lock() {
-        if *amp > 0.001 { return Ok(*amp); }
-    }
-    Ok(0.0)
+    Ok(manager.inner().lock().unwrap().peak())
 }
 
 #[tauri::command]
