@@ -78,8 +78,6 @@ dependencies = [
  "diviora-client",
  "diviora-dsp",
  "getrandom 0.2.17",
- "jni 0.21.1",
- "ndk-context",
  "pbkdf2",
  "rodio",
  "serde",

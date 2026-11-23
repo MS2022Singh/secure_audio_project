@@ -46,8 +46,7 @@ pub fn run() {
                 diviora_client::state::set_base_dir(dir);
             }
             commands::start_background_config_sync();
-            #[cfg(target_os = "android")]
-            init_android_audio_context(app);
+
             // Automatic app updates (desktop): check the developer's latest signed release at
             // start-up and install it silently (see DEVELOPER_GUIDE.md).
             #[cfg(desktop)]
@@ -108,27 +107,6 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-/// cpal/oboe (audio output) read the Android app context through `ndk_context`, which Tauri
-/// does not set. Without it, opening audio panics. Set it once from the activity.
-#[cfg(target_os = "android")]
-fn init_android_audio_context(app: &tauri::App) {
-    use tauri::Manager;
-    let Some(window) = app.webview_windows().into_values().next() else { return };
-    let _ = window.with_webview(|webview| {
-        webview.jni_handle().exec(|env, activity, _webview| {
-            if let (Ok(vm), Ok(context)) = (env.get_java_vm(), env.new_global_ref(activity)) {
-                unsafe {
-                    ndk_context::initialize_android_context(
-                        vm.get_java_vm_pointer() as *mut std::ffi::c_void,
-                        context.as_obj().as_raw() as *mut std::ffi::c_void,
-                    );
-                }
-                std::mem::forget(context); // must stay valid for the life of the app
-                playback::manager::AUDIO_CONTEXT_READY.store(true, std::sync::atomic::Ordering::Release);
-            }
-        });
-    });
-}
 
 #[cfg(desktop)]
 async fn tokio_sleep(secs: u64) {

@@ -7,9 +7,6 @@ use std::thread;
 use std::time::Duration;
 use rodio::{Decoder, OutputStream, Sink, Source};
 
-/// Android: set once the app context has been handed to the audio library (see lib.rs).
-/// Other platforms need nothing.
-pub static AUDIO_CONTEXT_READY: AtomicBool = AtomicBool::new(!cfg!(target_os = "android"));
 
 /// Path value that plays the 440 Hz calibration tone instead of a file.
 pub const TEST_TONE: &str = "trigger_test_tone";
@@ -214,10 +211,6 @@ impl PlaybackManager {
         thread::spawn(move || {
           // A failure inside the audio library must become an error message, never a crash.
           let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-            for _ in 0..50 {
-                if AUDIO_CONTEXT_READY.load(Ordering::Acquire) { break; }
-                thread::sleep(Duration::from_millis(100));
-            }
             let fail = |e: String| {
                 if gen_ref.load(Ordering::Acquire) == new_gen {
                     *status_ref.lock().unwrap() = PlaybackStatus::Failed(e);
