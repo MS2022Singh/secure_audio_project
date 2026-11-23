@@ -1,0 +1,26 @@
+# Same structure as a real multichannel Equalizer APO 1.4.2 configuration (made-up values).
+Preamp: -6 dB
+Filter: ON NOF Fc 100 Hz Channels=L,R Q 2
+Filter: ON PK Fc 3000 Hz Gain 2 dB Q 1
+Channel: all
+Copy: CX=0.5*L+0.5*R LX=L RX=R LY=L RY=R LZ=-3dB*L RZ=-3dB*R LFEX=0
+Copy: LFEX=0.5*L+0.5*R
+Channel: L R
+Preamp: -1 dB
+Copy: RLX=0 RRX=0 SLX=0 SRX=0
+Copy: RLX=0.5*L+0.5*R RRX=0.5*R+0.5*L SLX=0.7*L-0.3*R SRX=0.7*R-0.3*L
+Channel: CX
+Filter: ON LP Fc 8000 Hz
+Channel: LFEX
+Filter: ON LP Fc 120 Hz
+Channel: LX RX
+Filter: ON HS Fc 6000 Hz Gain -3 dB
+Channel: LY RY LZ RZ
+Filter: ON PK Fc 2000 Hz Gain -2 dB Q 0.7
+Delay: L=0ms R=0ms SLX=5ms SRX=5ms RLX=10ms RRX=10ms LX=1ms RX=1ms CX=0ms LY=2ms RY=2ms LZ=3ms RZ=3ms LFEX=0ms
+Channel: RLX RRX SLX SRX
+Filter: ON PK Fc 500 Hz Gain -4 dB Q 1
+Filter: ON NOF Fc 8000 Hz Q 1 Channels=SLX,RLX,SRX,RRX
+Copy: L=0.3*L+0.2*CX+0.1*RX+0.1*LY+0.1*LZ+0.1*SLX+0.1*RLX+0.1*LFEX R=0.3*R+0.2*CX+0.1*LX+0.1*RY+0.1*RZ+0.1*SRX+0.1*RRX+0.1*LFEX
+Channel: all
+Filter: ON NOF Fc 60 Hz Q 4 Channels=L,R

@@ -22,3 +22,21 @@ fn sample_config_converts_end_to_end() {
     e.process_interleaved(&mut buf);
     assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
 }
+
+#[test]
+fn virtual_channel_multichannel_config_converts_and_runs() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/");
+    let text = std::fs::read_to_string(format!("{}virtual_channels_config.txt", dir)).unwrap();
+    for ch in [2usize, 6, 8] {
+        let ctx = eqapo::Context { sample_rate: 48000, channels: ch, ..Default::default() };
+        let cfg = eqapo::parse_with(&text, None, &ctx);
+        assert!(cfg.warnings.is_empty(), "{} ch: {:?}", ch, cfg.warnings);
+        let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, ch, 1);
+        assert_eq!(e.channels(), ch);
+        let mut buf: Vec<f32> = (0..48000 * ch).map(|i| (((i / ch) as f32) * 0.05).sin() * 0.5).collect();
+        e.process_interleaved(&mut buf);
+        assert!(buf.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+        let energy: f32 = buf.iter().map(|s| s * s).sum();
+        assert!(energy > 1.0, "{} ch: output should not be silent", ch);
+    }
+}

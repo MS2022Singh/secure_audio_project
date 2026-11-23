@@ -120,10 +120,36 @@ enum CStage {
 }
 
 pub struct Engine {
+    /// Channels of the stream (what the speakers get).
     channels: usize,
+    /// Channels processed internally: the stream's plus virtual channels the config creates.
+    width: usize,
+    work: [f32; MAX_CHANNELS],
     sample_rate: u32,
     stages: Vec<CStage>,
     pub revision: u64,
+}
+
+/// Highest channel index a stage refers to, plus one.
+fn referenced_width(stages: &[Stage]) -> usize {
+    let mut w = 0;
+    let mut see = |sel: &ChannelSel| if let ChannelSel::List(v) = sel { for c in v { w = w.max(c + 1); } };
+    for s in stages {
+        match s {
+            Stage::Gain { channels, .. } | Stage::Biquad { channels, .. } | Stage::Delay { channels, .. }
+            | Stage::Iir { channels, .. } | Stage::GraphicEq { channels, .. } | Stage::Convolution { channels, .. } => see(channels),
+            Stage::Mix { routes } => {
+                let mut v = Vec::new();
+                for (d, srcs) in routes {
+                    v.push(*d);
+                    v.extend(srcs.iter().map(|(c, _)| *c));
+                }
+                see(&ChannelSel::List(v));
+            }
+            Stage::Watermark(_) => {}
+        }
+    }
+    w
 }
 
 fn mask(sel: &ChannelSel, channels: usize) -> [bool; MAX_CHANNELS] {
@@ -137,11 +163,14 @@ fn mask(sel: &ChannelSel, channels: usize) -> [bool; MAX_CHANNELS] {
 impl Engine {
     /// A pass-through engine.
     pub fn bypass(sample_rate: u32, channels: usize) -> Engine {
-        Engine { channels: channels.min(MAX_CHANNELS), sample_rate, stages: Vec::new(), revision: 0 }
+        let channels = channels.clamp(1, MAX_CHANNELS);
+        Engine { channels, width: channels, work: [0.0; MAX_CHANNELS], sample_rate, stages: Vec::new(), revision: 0 }
     }
 
-    pub fn compile(stages: &[Stage], sample_rate: u32, channels: usize, revision: u64) -> Engine {
-        let channels = channels.clamp(1, MAX_CHANNELS);
+    pub fn compile(stages: &[Stage], sample_rate: u32, stream_channels: usize, revision: u64) -> Engine {
+        let stream_channels = stream_channels.clamp(1, MAX_CHANNELS);
+        // Everything below is built for the internal width (stream + virtual channels).
+        let channels = stream_channels.max(referenced_width(stages)).min(MAX_CHANNELS);
         let sr = sample_rate as f64;
         let mut out = Vec::with_capacity(stages.len());
         for s in stages {
@@ -206,7 +235,7 @@ impl Engine {
                 }
             }
         }
-        Engine { channels, sample_rate, stages: out, revision }
+        Engine { channels: stream_channels, width: channels, work: [0.0; MAX_CHANNELS], sample_rate, stages: out, revision }
     }
 
     pub fn channels(&self) -> usize { self.channels }
@@ -232,7 +261,26 @@ impl Engine {
     #[inline]
     pub fn process_frame(&mut self, frame: &mut [f32]) {
         let n = frame.len().min(self.channels);
-        for st in self.stages.iter_mut() {
+        if self.width == n {
+            Self::run(&mut self.stages, &mut frame[..n], n);
+        } else {
+            // Virtual channels start silent each frame; Copy fills them.
+            self.work[..n].copy_from_slice(&frame[..n]);
+            for v in self.work[n..self.width].iter_mut() { *v = 0.0; }
+            Self::run(&mut self.stages, &mut self.work[..self.width], n);
+            frame[..n].copy_from_slice(&self.work[..n]);
+        }
+        // Hard safety clip so positive EQ gain can never wrap or blow speakers.
+        for s in frame[..n].iter_mut() {
+            *s = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
+        }
+    }
+
+    /// Run all stages over `frame` (stream + virtual channels); `out_n` = stream channels.
+    #[inline]
+    fn run(stages: &mut [CStage], frame: &mut [f32], out_n: usize) {
+        let n = frame.len();
+        for st in stages.iter_mut() {
             match st {
                 CStage::Gain { lin } => {
                     for c in 0..n { frame[c] *= lin[c]; }
@@ -258,7 +306,7 @@ impl Engine {
                         }
                     }
                 }
-                CStage::Watermark(w) => w.process_frame(&mut frame[..n]),
+                CStage::Watermark(w) => w.process_frame(&mut frame[..out_n]),
                 CStage::Iir { b, a, on, z } => {
                     let order = b.len() - 1;
                     for c in 0..n {
@@ -284,10 +332,6 @@ impl Engine {
                     }
                 }
             }
-        }
-        // Hard safety clip so positive EQ gain can never wrap or blow speakers.
-        for s in frame[..n].iter_mut() {
-            *s = s.clamp(-1.0, 1.0);
         }
     }
 }
@@ -403,6 +447,31 @@ mod tests {
         assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
         let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 1);
         assert!((sine_rms_db(&mut e, 1000.0) + 6.02).abs() < 0.1);
+    }
+
+    #[test]
+    fn virtual_channels_per_channel_delay_and_filter_channels() {
+        // Mid channel CX = (L+R)/2, delayed 1 sample, mixed back into L only.
+        let text = "Copy: CX=0.5*L+0.5*R\nDelay: CX=1 samples L=0ms\nFilter: ON NOF Fc 50 Hz Q 30 Channels=R\nCopy: L=L+CX\n";
+        let cfg = parse(text, None);
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 1);
+        let mut f1 = [0.4f32, 0.2];
+        e.process_frame(&mut f1);
+        assert!((f1[0] - 0.4).abs() < 1e-6, "{:?}", f1); // CX delayed: nothing yet
+        let mut f2 = [0.0f32, 0.0];
+        e.process_frame(&mut f2);
+        assert!((f2[0] - 0.3).abs() < 1e-6, "{:?}", f2); // previous mid (0.4+0.2)/2 arrives in L
+        // Virtual channels never reach the output; a stereo stream stays stereo.
+        assert_eq!(e.channels(), 2);
+        // Notch on R only (50 Hz removed from R, L untouched).
+        let cfg = parse("Filter: ON NOF Fc 1000 Hz Q 2 Channels=R", None);
+        let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 1);
+        let sr = 48000.0;
+        let mut buf: Vec<f32> = (0..96000).flat_map(|i| { let v = (0.5 * (2.0 * PI * 1000.0 * i as f64 / sr).sin()) as f32; [v, v] }).collect();
+        e.process_interleaved(&mut buf);
+        let rms = |c: usize| (buf[96000..].iter().skip(c).step_by(2).map(|s| (*s as f64).powi(2)).sum::<f64>() / 48000.0).sqrt();
+        assert!(rms(0) > 0.3 && rms(1) < 0.01, "{} {}", rms(0), rms(1));
     }
 
     #[test]

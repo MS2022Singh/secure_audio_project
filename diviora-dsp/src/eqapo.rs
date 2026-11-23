@@ -223,6 +223,42 @@ struct ParseState {
     vars: Vars,
     /// Files uploaded with the configuration (`DivioraFile:` lines): lower-case file name -> bytes.
     files: HashMap<String, Arc<Vec<u8>>>,
+    chans: ChanMap,
+}
+
+/// Channel names: the standard ones, numbers, and virtual channels that the configuration
+/// creates by name (`Copy: CX=0.5*L+0.5*R`, then `Channel: CX`, `Copy: L=L+CX`), like
+/// Equalizer APO. Virtual channels get indices after the device's channels (at least 8),
+/// exist only inside the engine and are never sent to the speakers.
+pub struct ChanMap {
+    virt: HashMap<String, usize>,
+    next: usize,
+}
+
+impl ChanMap {
+    pub fn new(device_channels: usize) -> ChanMap {
+        ChanMap { virt: HashMap::new(), next: device_channels.max(8).min(MAX_CHANNELS) }
+    }
+    /// Index of a channel name; unknown names become new virtual channels when `create`.
+    pub fn resolve(&mut self, name: &str, create: bool) -> Option<usize> {
+        let n = name.trim();
+        if let Some(i) = channel_index(n) {
+            return Some(i);
+        }
+        let key = n.to_uppercase();
+        if let Some(i) = self.virt.get(&key) {
+            return Some(*i);
+        }
+        let valid = !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && key.chars().next().map_or(false, |c| c.is_ascii_alphabetic());
+        if create && valid && self.next < MAX_CHANNELS {
+            let i = self.next;
+            self.next += 1;
+            self.virt.insert(key, i);
+            return Some(i);
+        }
+        None
+    }
 }
 
 impl ParseState {
@@ -246,6 +282,7 @@ pub fn parse_with(text: &str, resolver: Option<IncludeResolver>, ctx: &Context) 
         conds: Vec::new(),
         vars: ctx.vars(),
         files: embedded_files(text),
+        chans: ChanMap::new(ctx.channels),
     };
     parse_into(text, "config", resolver, 0, &mut st, &mut cfg);
     if !st.conds.is_empty() {
@@ -368,13 +405,33 @@ fn parse_into(
                 Some(g) => cfg.stages.push((st.device.clone(), Stage::Gain { gain_db: g, channels: st.channels.clone() })),
                 None => warn(cfg, file, lineno, line, "could not read preamp gain"),
             },
-            "filter" => match parse_filter(args) {
-                Ok(Some(FilterDef::Biquad(spec))) => cfg.stages.push((st.device.clone(), Stage::Biquad { spec, channels: st.channels.clone() })),
-                Ok(Some(FilterDef::Iir(b, a))) => cfg.stages.push((st.device.clone(), Stage::Iir { b, a, channels: st.channels.clone() })),
-                Ok(None) => {} // filter switched OFF
-                Err(e) => warn(cfg, file, lineno, line, e),
-            },
-            "channel" => match parse_channel_sel(args) {
+            "filter" => {
+                // Optional "Channels=L,R" inside the line applies the filter to those channels only.
+                let mut chans = st.channels.clone();
+                let mut rest = Vec::new();
+                let mut bad = None;
+                for tok in args.split_whitespace() {
+                    if tok.len() > 9 && tok[..9].eq_ignore_ascii_case("channels=") {
+                        match parse_channel_list(&tok[9..].replace(',', " "), &mut st.chans) {
+                            Some(c) => chans = c,
+                            None => bad = Some(tok.to_string()),
+                        }
+                    } else {
+                        rest.push(tok);
+                    }
+                }
+                if let Some(b) = bad {
+                    warn(cfg, file, lineno, line, format!("unknown channel in '{}'", b));
+                    continue;
+                }
+                match parse_filter(&rest.join(" ")) {
+                    Ok(Some(FilterDef::Biquad(spec))) => cfg.stages.push((st.device.clone(), Stage::Biquad { spec, channels: chans })),
+                    Ok(Some(FilterDef::Iir(b, a))) => cfg.stages.push((st.device.clone(), Stage::Iir { b, a, channels: chans })),
+                    Ok(None) => {} // filter switched OFF
+                    Err(e) => warn(cfg, file, lineno, line, e),
+                }
+            }
+            "channel" => match parse_channel_sel(args, &mut st.chans) {
                 Some(c) => st.channels = c,
                 None => warn(cfg, file, lineno, line, "unknown channel name"),
             },
@@ -387,13 +444,18 @@ fn parse_into(
                     st.device = DeviceSel::Matching(pats);
                 }
             }
-            "copy" => match parse_copy(args) {
+            "copy" => match parse_copy(args, &mut st.chans) {
                 Ok(routes) => cfg.stages.push((st.device.clone(), Stage::Mix { routes })),
                 Err(e) => warn(cfg, file, lineno, line, e),
             },
-            "delay" => match parse_delay(args) {
-                Some(d) => cfg.stages.push((st.device.clone(), d.with_channels(st.channels.clone()))),
-                None => warn(cfg, file, lineno, line, "could not read delay (expected '<n> ms' or '<n> samples')"),
+            "delay" => match parse_delay(args, &mut st.chans) {
+                Ok(list) => {
+                    for (ms, sel) in list {
+                        let channels = sel.unwrap_or_else(|| st.channels.clone());
+                        cfg.stages.push((st.device.clone(), Stage::Delay { ms, channels }));
+                    }
+                }
+                Err(e) => warn(cfg, file, lineno, line, e),
             },
             "include" => {
                 if depth >= MAX_INCLUDE_DEPTH {
@@ -447,17 +509,6 @@ fn parse_into(
     }
 }
 
-trait WithChannels {
-    fn with_channels(self, c: ChannelSel) -> Stage;
-}
-impl WithChannels for Stage {
-    fn with_channels(self, c: ChannelSel) -> Stage {
-        match self {
-            Stage::Delay { ms, .. } => Stage::Delay { ms, channels: c },
-            other => other,
-        }
-    }
-}
 
 fn cond_value(args: &str, st: &ParseState, cfg: &mut EqApoConfig, file: &str, lineno: usize, line: &str) -> bool {
     match expr::eval(args, &st.vars) {
@@ -512,19 +563,47 @@ fn parse_db(s: &str) -> Option<f64> {
     parse_num(t)
 }
 
-fn parse_delay(s: &str) -> Option<Stage> {
-    let toks: Vec<&str> = s.split_whitespace().collect();
-    let v = parse_num(toks.first()?)?;
-    let unit = toks.get(1).map(|u| u.to_lowercase()).unwrap_or_else(|| "ms".into());
-    // Samples are converted at 48 kHz here; the engine recompiles in ms so this is the
-    // only place a sample rate is assumed.
-    let ms = match unit.as_str() {
-        "ms" => v,
-        "samples" | "sample" => v / 48.0,
-        _ => return None,
+/// "10 ms" / "480 samples" (selected channels), or per channel: "L=5ms R=3 ms CX=2.5ms".
+/// Returns (milliseconds, channels or None = the current Channel selection).
+fn parse_delay(s: &str, chans: &mut ChanMap) -> Result<Vec<(f64, Option<ChannelSel>)>, String> {
+    // Samples are converted at 48 kHz (the parser does not know the stream rate here).
+    let to_ms = |v: f64, unit: &str| -> Result<f64, String> {
+        let ms = match unit.to_lowercase().as_str() {
+            "" | "ms" => v,
+            "samples" | "sample" => v / 48.0,
+            u => return Err(format!("unknown delay unit '{}'", u)),
+        };
+        if ms < 0.0 { Err("negative delay".into()) } else { Ok(ms) }
     };
-    if ms < 0.0 { return None; }
-    Some(Stage::Delay { ms, channels: ChannelSel::All })
+    let split_unit = |t: &str| -> (String, String) {
+        let i = t.find(|c: char| c.is_ascii_alphabetic() && c != 'e' && c != 'E').unwrap_or(t.len());
+        (t[..i].to_string(), t[i..].to_string())
+    };
+    let toks: Vec<&str> = s.split_whitespace().collect();
+    if !toks.iter().any(|t| t.contains('=')) {
+        let first = toks.first().ok_or("missing delay value")?;
+        let (num, glued) = split_unit(first);
+        let v = parse_num(&num).ok_or("could not read delay (expected '<n> ms' or '<n> samples')")?;
+        let unit = if !glued.is_empty() { glued } else { toks.get(1).map(|u| u.to_string()).unwrap_or_default() };
+        return Ok(vec![(to_ms(v, &unit)?, None)]);
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < toks.len() {
+        let (name, val) = toks[i].split_once('=').ok_or_else(|| format!("'{}' is not CHANNEL=delay", toks[i]))?;
+        let idx = chans.resolve(name, true).ok_or_else(|| format!("unknown channel '{}'", name))?;
+        let (num, glued) = split_unit(val);
+        let v = parse_num(&num).ok_or_else(|| format!("bad delay '{}'", val))?;
+        let mut unit = glued;
+        if unit.is_empty() {
+            if let Some(u) = toks.get(i + 1) {
+                if !u.contains('=') { unit = u.to_string(); i += 1; }
+            }
+        }
+        out.push((to_ms(v, &unit)?, Some(ChannelSel::List(vec![idx]))));
+        i += 1;
+    }
+    Ok(out)
 }
 
 fn channel_index(name: &str) -> Option<usize> {
@@ -543,14 +622,18 @@ fn channel_index(name: &str) -> Option<usize> {
     }
 }
 
-fn parse_channel_sel(s: &str) -> Option<ChannelSel> {
+fn parse_channel_sel(s: &str, chans: &mut ChanMap) -> Option<ChannelSel> {
     let t = s.trim();
     if t.eq_ignore_ascii_case("all") {
         return Some(ChannelSel::All);
     }
+    parse_channel_list(t, chans)
+}
+
+fn parse_channel_list(t: &str, chans: &mut ChanMap) -> Option<ChannelSel> {
     let mut v = Vec::new();
     for tok in t.split_whitespace() {
-        v.push(channel_index(tok)?);
+        v.push(chans.resolve(tok, true)?);
     }
     if v.is_empty() { None } else { Some(ChannelSel::List(v)) }
 }
@@ -622,7 +705,7 @@ fn parse_biquad(toks: &[&str]) -> Result<Option<BiquadSpec>, String> {
         "LP1" | "LPF1" => FilterKind::LowPass1,
         "HP1" | "HPF1" => FilterKind::HighPass1,
         "BP" | "BPQ" | "BANDPASS" => FilterKind::BandPass,
-        "NO" | "NOTCH" => FilterKind::Notch,
+        "NO" | "NOF" | "NOTCH" => FilterKind::Notch,
         "AP" | "APQ" | "ALLPASS" => FilterKind::AllPass,
         "NONE" => return Ok(None),
         other => return Err(format!("filter type '{}' not supported", other)),
@@ -719,7 +802,7 @@ fn parse_biquad(toks: &[&str]) -> Result<Option<BiquadSpec>, String> {
 }
 
 /// `Copy: L=0.5*L+0.5*R R=L C=-6dB*L+-6dB*R SUB=0`
-fn parse_copy(args: &str) -> Result<Vec<(usize, Vec<(usize, f64)>)>, String> {
+fn parse_copy(args: &str, chans: &mut ChanMap) -> Result<Vec<(usize, Vec<(usize, f64)>)>, String> {
     // Remove spaces around operators so assignments become single tokens.
     let mut s = args.to_string();
     for op in ["=", "+", "*"] {
@@ -729,7 +812,7 @@ fn parse_copy(args: &str) -> Result<Vec<(usize, Vec<(usize, f64)>)>, String> {
     let mut routes = Vec::new();
     for assign in s.split_whitespace() {
         let (dest, expr) = assign.split_once('=').ok_or_else(|| format!("'{}' is not an assignment", assign))?;
-        let dest = channel_index(dest).ok_or_else(|| format!("unknown channel '{}'", dest))?;
+        let dest = chans.resolve(dest, true).ok_or_else(|| format!("unknown channel '{}'", dest))?;
         let mut sources = Vec::new();
         // "L-R" / "0.5*L-0.5*R": subtraction is addition of a negated term (but not the
         // minus of a negative factor or exponent such as "-6dB*L" or "1e-3*L").
@@ -753,7 +836,7 @@ fn parse_copy(args: &str) -> Result<Vec<(usize, Vec<(usize, f64)>)>, String> {
                 if parse_num(ch) == Some(0.0) { continue; } // "SUB=0" -> silence
                 return Err("constant values in Copy are not supported".into());
             }
-            let src = channel_index(ch).ok_or_else(|| format!("unknown channel '{}'", ch))?;
+            let src = chans.resolve(ch, true).ok_or_else(|| format!("unknown channel '{}'", ch))?;
             sources.push((src, factor));
         }
         routes.push((dest, sources));

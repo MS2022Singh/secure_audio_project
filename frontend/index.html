@@ -124,6 +124,8 @@
             <div class="update-banner" id="boxUpdateBanner">
                 <span id="lblUpdateText">A new version is available.</span>
                 <button class="btn-green" id="btnInstallUpdate">Download update</button>
+                <button class="btn-dark" id="btnCopyUpdateLink">Copy link</button>
+                <span id="lblUpdateLink" style="font-size: 11.5px; color: var(--text-muted); word-break: break-all; user-select: text;"></span>
             </div>
 
             <!-- CONSUMER VIEW -->
@@ -909,7 +911,8 @@
                 if (u && u.available) {
                     pendingUpdateUrl = u.url;
                     document.getElementById('lblUpdateText').innerText =
-                        `Version ${u.latest} is available (you have ${u.current}). Download it, then open the file to install. Your library and licence are kept.`;
+                        `Version ${u.latest} is available (you have ${u.current}). Download it in Chrome, then open the downloaded file and tap Install (no need to uninstall; your library and licence are kept).`;
+                    document.getElementById('lblUpdateLink').innerText = u.url;
                     document.getElementById('boxUpdateBanner').style.display = 'flex';
                 }
                 if (manual) return u;
@@ -917,6 +920,10 @@
                 if (manual) throw e;
             }
         }
+        document.getElementById('btnCopyUpdateLink').addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(pendingUpdateUrl); alert("Link copied: open Chrome, paste it into the address bar and download."); }
+            catch (e) { alert("Open this link in Chrome:\n" + pendingUpdateUrl); }
+        });
         document.getElementById('btnInstallUpdate').addEventListener('click', async () => {
             try { await invokeCmd('open_update_download', { url: pendingUpdateUrl }); }
             catch (err) { alert("Could not open the download: " + err); }
