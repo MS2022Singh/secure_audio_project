@@ -55,10 +55,11 @@ Open it with **Ctrl + Shift + D** (on a phone: tap the **DIVIORA** logo 7 times 
   The app contains only a salted PBKDF2-SHA256 hash of it (`src-tauri/developer_access.json`).
   The recovery key also unlocks the panel.
   **To change the password:** unlock the developer panel, go to **Developer Password**, enter the
-  new password twice and press **Create new password file**. Write down the new recovery key it
-  shows. It saves `developer_access.json` on the Desktop (hashes only, safe to share); it replaces
-  `src-tauri/developer_access.json`, and the next published update makes the new password the only
-  one on every device. (Alternative without the app: `tools\set-developer-password.ps1`.)
+  current password (or recovery key) and the new one twice, press **Change password**. It works
+  immediately on that device and the old password stops working there; do the same on each of your
+  devices. A user cannot do this: the change only works with the real current password or recovery
+  key (the new password unlocks only by decrypting the built-in secret). Optionally send the file
+  contents shown afterwards to build the new password into the app for every device.
 - **Server-side protection:** every developer action (upload/lock config, watermark settings,
   reports, invites, status) is refused by the app's core unless the panel was unlocked with the
   password in this session; hiding the buttons is not the protection. Five wrong passwords lock the
@@ -70,6 +71,10 @@ Open it with **Ctrl + Shift + D** (on a phone: tap the **DIVIORA** logo 7 times 
   32), Copy, Delay, Device, Include, Stage, If/ElseIf/Else/EndIf, Eval and backtick expressions
   (evaluated for the real sample rate, channels and device). Only VST and LoudnessCorrection are
   not supported; they are listed after upload, never silently dropped.
+- **Updates without clutter:** Windows installs new versions by itself (start-up and every 6 hours).
+  Phones show **Download update**: the app downloads it into its own storage and opens Android's
+  installer (tap **Update**); nothing is saved to Downloads and nothing needs uninstalling. The
+  first time, Android asks to allow updates from Diviora.
 - **No reboots:** installing, updating and uninstalling restart Windows audio instead (sound stops
   for a few seconds). Locking a configuration applies in about one second. If the status line says
   the engine is not loaded, press **Restart Windows Audio**.

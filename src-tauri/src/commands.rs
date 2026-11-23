@@ -307,6 +307,59 @@ pub async fn check_for_update(app: AppHandle) -> Result<serde_json::Value, Strin
     Ok(serde_json::json!({ "available": available, "current": current, "latest": latest, "url": url }))
 }
 
+/// Phones: download the update into the app's own cache (with progress) and open Android's
+/// installer ("Do you want to update this app?"). No file is left in Downloads; the cache
+/// copy is removed at the next start. Ok("needs-permission") = Android first asks to allow
+/// installs from Diviora (a settings page opens; tap Download update again after allowing).
+#[tauri::command]
+pub async fn install_phone_update(app: AppHandle, url: String) -> Result<String, String> {
+    if !url.starts_with("https://github.com/MS2022Singh/secure_audio_project/releases/") {
+        return Err("Unexpected update address.".into());
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, url);
+        Err("Only for Android: Windows updates itself.".into())
+    }
+    #[cfg(target_os = "android")]
+    {
+        use std::io::{Read, Write};
+        use tauri::Manager;
+        let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("updates");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("diviora-update.apk");
+        let p2 = path.clone();
+        let set = |m: String| { if let Ok(mut s) = crate::UPDATE_STATUS.lock() { *s = m; } };
+        set("downloading update…".into());
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            let resp = ureq::get(&url).call().map_err(|e| format!("download failed: {}", e))?;
+            let total: u64 = resp.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let mut reader = resp.into_reader();
+            let mut f = fs::File::create(&p2).map_err(|e| e.to_string())?;
+            let mut buf = vec![0u8; 256 * 1024];
+            let mut done: u64 = 0;
+            loop {
+                let n = reader.read(&mut buf).map_err(|e| format!("download interrupted: {}", e))?;
+                if n == 0 { break; }
+                f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+                done += n as u64;
+                if let Ok(mut s) = crate::UPDATE_STATUS.lock() {
+                    *s = if total > 0 { format!("downloading update… {}%", done * 100 / total) }
+                         else { format!("downloading update… {} MB", done / 1_048_576) };
+                }
+            }
+            if total > 0 && done != total { return Err("download incomplete; try again".into()); }
+            Ok(())
+        }).await.map_err(|e| e.to_string())??;
+        set("opening the installer…".into());
+        let installer = app.state::<tauri_plugin_apkinstaller::ApkInstaller<tauri::Wry>>();
+        let opened = installer.install(path.to_string_lossy().to_string())?;
+        set(String::new());
+        Ok(if opened { "installer-opened".into() } else { "needs-permission".into() })
+    }
+}
+
 /// Open the update download (Android: the browser downloads the APK, then the user installs it).
 #[tauri::command]
 pub fn open_update_download(app: AppHandle, url: String) -> Result<(), String> {
@@ -320,12 +373,13 @@ pub fn open_update_download(app: AppHandle, url: String) -> Result<(), String> {
 /// Developer: create the file for a new developer password. It contains only salted hashes,
 /// so it is safe to send or commit; the next published version uses it on every device.
 #[tauri::command]
-pub fn change_developer_password(new_password: String, repeat: String) -> Result<serde_json::Value, String> {
+pub fn change_developer_password(current: String, new_password: String, repeat: String) -> Result<serde_json::Value, String> {
     require_developer()?;
     if new_password != repeat {
         return Err("The two new passwords are different.".into());
     }
-    let (json, recovery) = SecurityManager::make_access_file(new_password.trim())?;
+    // Effective on this device immediately; the file makes it permanent for every device.
+    let (json, recovery) = SecurityManager::change_password_here(&current, new_password.trim())?;
     let path = desktop_file("developer_access.json");
     let saved = fs::write(&path, &json).is_ok();
     Ok(serde_json::json!({

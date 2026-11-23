@@ -397,10 +397,11 @@
 
                 <div class="card">
                     <h3 style="margin: 0 0 12px 0;">🔐 Developer Password</h3>
-                    <p style="font-size: 12.5px; color: var(--text-muted); margin: 0 0 12px 0; line-height: 1.5;">The developer password is built into the app so users cannot create their own. Choose a new one here: Diviora creates <b>developer_access.json</b> (it holds only scrambled hashes, never the password) and a new recovery key. Send that file to be built in; from the next version on, only the new password opens this panel on every device.</p>
+                    <p style="font-size: 12.5px; color: var(--text-muted); margin: 0 0 12px 0; line-height: 1.5;">Change the password <b>on this device</b>: it works immediately here and the old one stops working here. To use the new password on your other devices too, change it there the same way (enter your current password there). Users cannot create a developer password: the change only works with the real current password or recovery key.</p>
+                    <input type="password" id="txtCurDevPass" placeholder="Current developer password (or recovery key)" style="margin-bottom: 10px;" />
                     <input type="password" id="txtNewDevPass" placeholder="New developer password (12+ characters, mixed)" style="margin-bottom: 10px;" />
                     <input type="password" id="txtNewDevPass2" placeholder="Repeat the new password" style="margin-bottom: 12px;" />
-                    <button class="btn-green" id="btnMakeDevPass">Create new password file</button>
+                    <button class="btn-green" id="btnMakeDevPass">Change password</button>
                     <button class="btn-dark" id="btnCopyDevAccess" style="display:none; margin-top: 12px;">📋 Copy the file contents</button>
                     <textarea id="txtDevAccessFile" readonly style="display:none; width: 100%; box-sizing: border-box; margin-top: 12px; height: 140px; background: #0c0d14; color: var(--primary-green); border: 1px solid var(--border-color); border-radius: 6px; font-family: monospace; font-size: 11.5px; padding: 10px;"></textarea>
                 </div>
@@ -924,9 +925,26 @@
             try { await navigator.clipboard.writeText(pendingUpdateUrl); alert("Link copied: open Chrome, paste it into the address bar and download."); }
             catch (e) { alert("Open this link in Chrome:\n" + pendingUpdateUrl); }
         });
-        document.getElementById('btnInstallUpdate').addEventListener('click', async () => {
-            try { await invokeCmd('open_update_download', { url: pendingUpdateUrl }); }
-            catch (err) { alert("Could not open the download: " + err); }
+        // Phones: the app downloads the update itself and opens Android's installer
+        // (nothing lands in Downloads; no uninstall needed).
+        document.getElementById('btnInstallUpdate').addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            const poll = setInterval(async () => {
+                try { const v = await invokeCmd('app_version_info'); if (v.update_status) btn.innerText = v.update_status; } catch (x) {}
+            }, 700);
+            try {
+                const r = await invokeCmd('install_phone_update', { url: pendingUpdateUrl });
+                if (r === 'needs-permission') {
+                    alert("Android asks once to allow updates from Diviora: switch on \"Allow from this source\", come back, and tap Download update again.");
+                }
+            } catch (err) {
+                alert("Update failed: " + err + "\n\nYou can also copy the link and open it in Chrome.");
+            } finally {
+                clearInterval(poll);
+                btn.disabled = false;
+                btn.innerText = "Download update";
+            }
         });
         window.addEventListener('DOMContentLoaded', () => setTimeout(checkPhoneUpdate, 1500));
         setInterval(checkPhoneUpdate, 6 * 3600 * 1000);
@@ -1024,6 +1042,7 @@
         document.getElementById('btnMakeDevPass').addEventListener('click', async () => {
             try {
                 const r = await invokeCmd('change_developer_password', {
+                    current: document.getElementById('txtCurDevPass').value,
                     newPassword: document.getElementById('txtNewDevPass').value,
                     repeat: document.getElementById('txtNewDevPass2').value,
                 });
@@ -1031,11 +1050,11 @@
                 box.value = r.content;
                 box.style.display = 'block';
                 document.getElementById('btnCopyDevAccess').style.display = 'inline-block';
+                document.getElementById('txtCurDevPass').value = '';
                 document.getElementById('txtNewDevPass').value = '';
                 document.getElementById('txtNewDevPass2').value = '';
-                alert("New password file created" + (r.file ? ":\n" + r.file : " (shown below the button; copy it)") +
-                      "\n\nNEW RECOVERY KEY (write it down now, it is shown only once):\n" + r.recovery_key +
-                      "\n\nSend developer_access.json to be built into the next version. Until then the current password keeps working.");
+                alert("Password changed on this device. From now on use the NEW password here (the old one no longer opens the panel on this device). Your existing recovery key keeps working." +
+                      "\n\nOptional: to build the new password into the app for every device, send the file contents shown below (no password inside). Its recovery key would then be:\n" + r.recovery_key);
             } catch (err) { alert("Not created: " + err); }
         });
 

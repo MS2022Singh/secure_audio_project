@@ -22,7 +22,7 @@ const LOCKOUT: Duration = Duration::from_secs(60);
 
 pub struct SecurityManager;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct StoredSecret {
     version: u32,
     rounds: u32,
@@ -72,6 +72,24 @@ fn random_bytes<const N: usize>() -> [u8; N] {
     let mut b = [0u8; N];
     getrandom::getrandom(&mut b).expect("OS random generator unavailable");
     b
+}
+
+/// This device's changed developer password: its hash, and the built-in secret encrypted
+/// with a key derived from it (see `secret_via_override`).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DevOverride {
+    version: u32,
+    rounds: u32,
+    salt: String,
+    password_hash: String,
+    key_salt: String,
+    enc_secret: String,
+}
+
+fn derive_len(secret: &str, salt: &[u8], rounds: u32, len: usize) -> Vec<u8> {
+    let mut out = vec![0u8; len];
+    pbkdf2::pbkdf2_hmac::<Sha256>(secret.as_bytes(), salt, rounds, &mut out);
+    out
 }
 
 fn derive(secret: &str, salt: &[u8], rounds: u32) -> [u8; 32] {
@@ -163,7 +181,7 @@ impl SecurityManager {
         let stored = Self::load().ok_or_else(|| {
             "No developer password is set yet. Click \"Reset Password\" and leave the current-password box empty to create one.".to_string()
         })?;
-        let ok = check(pass, &stored.salt, &stored.password_hash, stored.rounds);
+        let ok = Self::password_matches(pass, &stored);
         let mut a = ATTEMPTS.lock().unwrap();
         if ok {
             a.failures = 0;
@@ -183,6 +201,83 @@ impl SecurityManager {
             let _ = fs::write(Self::lock_file(), t);
         }
         Ok(ok)
+    }
+
+    fn override_file() -> PathBuf {
+        Self::get_sec_dir().join("dev_override.json")
+    }
+
+    fn load_override() -> Option<DevOverride> {
+        serde_json::from_str(&fs::read_to_string(Self::override_file()).ok()?).ok()
+    }
+
+    /// The developer's built-in secret (password or recovery key) unlocked by `pass` through
+    /// this device's override, if `pass` is the override password.
+    fn secret_via_override(pass: &str, stored: &StoredSecret) -> Option<String> {
+        let ov = Self::load_override()?;
+        if !check(pass, &ov.salt, &ov.password_hash, ov.rounds) {
+            return None;
+        }
+        let enc = unhex(&ov.enc_secret)?;
+        let key = derive_len(pass, &unhex(&ov.key_salt)?, ov.rounds, enc.len());
+        let secret = String::from_utf8(enc.iter().zip(key.iter()).map(|(a, b)| a ^ b).collect()).ok()?;
+        // Only valid if it really is the built-in password or recovery key: a user cannot
+        // create an override without knowing one of them.
+        let genuine = check(&secret, &stored.salt, &stored.password_hash, stored.rounds)
+            || check(&secret, &stored.recovery_salt, &stored.recovery_hash, stored.rounds);
+        genuine.then_some(secret)
+    }
+
+    /// Login check: this device's changed password (if any), the built-in password (only
+    /// while this device has no changed password), or the built-in recovery key.
+    fn password_matches(pass: &str, stored: &StoredSecret) -> bool {
+        let pass = pass.trim();
+        if pass.is_empty() {
+            return false;
+        }
+        let recovery = check(&pass.to_uppercase(), &stored.recovery_salt, &stored.recovery_hash, stored.rounds);
+        if Self::load_override().is_some() {
+            return Self::secret_via_override(pass, stored).is_some() || recovery;
+        }
+        check(pass, &stored.salt, &stored.password_hash, stored.rounds) || recovery
+    }
+
+    /// Change the developer password on this device, effective immediately. `current` is the
+    /// current password (or recovery key). Also returns the built-in access file for the
+    /// next app version (so the new password then works on every device) and its new
+    /// recovery key.
+    pub fn change_password_here(current: &str, new_pass: &str) -> Result<(String, String), String> {
+        let stored = Self::load().ok_or("No developer password is configured in this build.")?;
+        Self::change_with(&stored, current, new_pass)
+    }
+
+    fn change_with(stored: &StoredSecret, current: &str, new_pass: &str) -> Result<(String, String), String> {
+        let stored = stored.clone();
+        let current = current.trim();
+        let secret = if check(current, &stored.salt, &stored.password_hash, stored.rounds) && Self::load_override().is_none() {
+            current.to_string()
+        } else if check(&current.to_uppercase(), &stored.recovery_salt, &stored.recovery_hash, stored.rounds) {
+            current.to_uppercase()
+        } else if let Some(s) = Self::secret_via_override(current, &stored) {
+            s
+        } else {
+            return Err("The current password (or recovery key) is wrong.".into());
+        };
+        validate_new_password(new_pass)?;
+        let salt = random_bytes::<16>();
+        let key_salt = random_bytes::<16>();
+        let key = derive_len(new_pass, &key_salt, PBKDF2_ROUNDS, secret.len());
+        let ov = DevOverride {
+            version: 1,
+            rounds: PBKDF2_ROUNDS,
+            salt: hex(&salt),
+            password_hash: hex(&derive(new_pass, &salt, PBKDF2_ROUNDS)),
+            key_salt: hex(&key_salt),
+            enc_secret: hex(&secret.as_bytes().iter().zip(key.iter()).map(|(a, b)| a ^ b).collect::<Vec<u8>>()),
+        };
+        fs::write(Self::override_file(), serde_json::to_string_pretty(&ov).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("Cannot save the new password: {}", e))?;
+        Self::make_access_file(new_pass)
     }
 
     /// Developer password change (developer panel): returns the new built-in access file
@@ -274,6 +369,40 @@ impl SecurityManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_password_works_here_and_cannot_be_forged() {
+        let dir = std::env::temp_dir().join(format!("diviora-sec-test-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        diviora_client::state::set_base_dir(dir.clone());
+        let _ = fs::remove_file(SecurityManager::override_file());
+        // A made-up "built-in" secret for the test.
+        let (salt, rsalt) = ([1u8; 16], [2u8; 16]);
+        let stored = StoredSecret {
+            version: 2, rounds: 1000, salt: hex(&salt), password_hash: hex(&derive("Old-Passw0rd!x", &salt, 1000)),
+            recovery_salt: hex(&rsalt), recovery_hash: hex(&derive("DVR-AAAA-BBBB-CCCC-DDDD-EEEE", &rsalt, 1000)),
+        };
+        assert!(SecurityManager::password_matches("Old-Passw0rd!x", &stored));
+        assert!(SecurityManager::password_matches("dvr-aaaa-bbbb-cccc-dddd-eeee", &stored)); // recovery key logs in
+        assert!(SecurityManager::change_with(&stored, "wrong", "New-Passw0rd!y").is_err());
+        SecurityManager::change_with(&stored, "Old-Passw0rd!x", "New-Passw0rd!y").unwrap();
+        assert!(SecurityManager::password_matches("New-Passw0rd!y", &stored)); // works immediately
+        assert!(!SecurityManager::password_matches("Old-Passw0rd!x", &stored)); // old one retired here
+        assert!(SecurityManager::password_matches("DVR-AAAA-BBBB-CCCC-DDDD-EEEE", &stored));
+        // Change again, using the changed password as the current one.
+        SecurityManager::change_with(&stored, "New-Passw0rd!y", "Third-Passw0rd!z").unwrap();
+        assert!(SecurityManager::password_matches("Third-Passw0rd!z", &stored));
+        assert!(!SecurityManager::password_matches("New-Passw0rd!y", &stored));
+        // A user writing their own override file (without the real secret) gets nothing.
+        let fake_salt = [3u8; 16];
+        let forged = DevOverride {
+            version: 1, rounds: 1000, salt: hex(&fake_salt), password_hash: hex(&derive("Hacker-Passw0rd!", &fake_salt, 1000)),
+            key_salt: hex(&[4u8; 16]), enc_secret: hex(b"guess-the-password"),
+        };
+        fs::write(SecurityManager::override_file(), serde_json::to_string(&forged).unwrap()).unwrap();
+        assert!(!SecurityManager::password_matches("Hacker-Passw0rd!", &stored));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn hashing_and_policy() {

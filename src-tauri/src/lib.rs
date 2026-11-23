@@ -52,7 +52,8 @@ pub fn run() {
     let manager = Arc::new(Mutex::new(PlaybackManager::new().expect("Failed to initialize PlaybackManager engine")));
 
     let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_apkinstaller::init());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
 
@@ -66,6 +67,11 @@ pub fn run() {
                 diviora_client::state::set_base_dir(dir);
             }
             commands::start_background_config_sync();
+            // Phones: remove the previous update's installer file (no clutter left behind).
+            #[cfg(mobile)]
+            if let Ok(cache) = app.path().app_cache_dir() {
+                let _ = std::fs::remove_dir_all(cache.join("updates"));
+            }
 
             // Automatic app updates (desktop): check the developer's latest signed release at
             // start-up and install it silently (see DEVELOPER_GUIDE.md).
@@ -122,6 +128,7 @@ pub fn run() {
             commands::set_playback_volume,
             commands::check_for_update,
             commands::open_update_download,
+            commands::install_phone_update,
             commands::restart_windows_audio,
             commands::verify_system_audio,
             commands::import_track_b64,

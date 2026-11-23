@@ -14,6 +14,8 @@ tauri-build = { version = "2.0.0", features = [] }
 tauri = { version = "2.0.0", features = [] }
 tauri-plugin-dialog = "2.0.0"
 tauri-plugin-opener = "2"
+# Android: hand a downloaded update to the system installer (local plugin).
+tauri-plugin-apkinstaller = { path = "plugins/apkinstaller" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rodio = "0.17"
@@ -32,6 +34,10 @@ diviora-client = { path = "../diviora-client" }
 winreg = "0.52"
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# In-app update download (rustls with bundled root certificates).
+ureq = "2"
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
 
@@ -42,3 +48,11 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+# Password hashing is deliberately slow (600 000 rounds); optimise it even in test builds.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
