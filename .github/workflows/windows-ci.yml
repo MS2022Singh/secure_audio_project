@@ -184,6 +184,10 @@ jobs:
     needs: [ build-and-test, android ]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # One publish at a time, never cancelled half-way (a cancelled publish leaves a draft).
+    concurrency:
+      group: publish-test-build
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -219,8 +223,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          gh release delete test-build --repo "$REPO" --yes --cleanup-tag || true
+          # Remove every earlier test-build release, drafts included (a draft has no tag).
+          gh api "repos/$REPO/releases?per_page=100" -q '.[] | select(.tag_name=="test-build") | .id' |
+            while read -r id; do gh api -X DELETE "repos/$REPO/releases/$id" || true; done
+          gh api -X DELETE "repos/$REPO/git/refs/tags/test-build" || true
           gh release create test-build out/* --repo "$REPO" --prerelease \
             --target "${{ github.sha }}" \
             --title "Test build 0.3.${{ github.run_number }} (${GITHUB_REF_NAME}, ${GITHUB_SHA::7})" \
             --notes "Latest automatic test build. Windows: run Diviora-Setup-windows-x64.exe (if SmartScreen warns: More info → Run anyway). Android: install Diviora-android-test.apk (allow installing unknown apps). How to check everything: docs/ACCEPTANCE_TESTS.md. Not for distribution to users."
+          # Make sure it is published (not left as a draft) and points at this build.
+          gh release edit test-build --repo "$REPO" --draft=false --prerelease
+          gh release view test-build --repo "$REPO" --json isDraft,assets -q '"draft=\(.isDraft) assets=\([.assets[].name] | join(","))"'
+          for i in 1 2 3 4 5 6; do
+            curl -sfL "https://github.com/$REPO/releases/download/test-build/latest.json" | grep '"version"' && break
+            sleep 10
+          done
