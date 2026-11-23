@@ -24,12 +24,12 @@ Diviora app (Administrator)            audiodg.exe (Windows audio)
 | `build_native_apo.bat` | The only build script |
 | `../windows-installer/install_native_apo.ps1` | Install, verify and uninstall, with backup and automatic rollback |
 
-## Legacy files (kept for history, do not build or run)
+## Legacy files (removed)
 
-- `DivioraAPO.cpp`, `DivioraAPO.h`, `ClassFactory.*`, `DllMain.cpp`, `DivioraAPOProxy.cpp` at the folder root, plus `build_all.bat`, `build_dll.bat`, `build_verified_dll.bat`, `build_and_dump.bat` and `CMakeLists.txt`. These are the earlier competing implementations.
-- `include/shared_protocol.h` belongs to the old shared-memory design.
-- `../windows-service/DivioraControlService.cpp` is a **VB-Cable bridge**. It also wrote `instantiated` and `process_calls` into the "APO diagnostics" itself, which made the history look as if the APO was processing audio when it was not. **Do not run it.**
-- `../windows-installer/injector_single.cpp` binds the mode-effect slot (`,6`). The supported injector is `injector_single_slot.cpp`, which binds the stream-effect slot (`,5`).
+Earlier attempts — the competing APO implementations, the VB-Cable bridge service (which wrote
+fake "APO" diagnostics), the mode-slot injector, registry-hack scripts and Python prototypes —
+were removed because the app no longer uses them. They remain in git history: commit `86f1002`
+is the last commit that contains them.
 
 ## Steps on Windows
 

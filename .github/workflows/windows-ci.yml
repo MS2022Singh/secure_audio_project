@@ -76,7 +76,7 @@ jobs:
           node-version: 20
 
       - name: Rust Android targets
-        run: rustup target add aarch64-linux-android
+        run: rustup target add aarch64-linux-android x86_64-linux-android
 
       - name: Linux build dependencies (host tools)
         run: |
@@ -87,19 +87,52 @@ jobs:
         working-directory: diviora-dsp
         run: cargo test --release
 
-      - name: Build Android APK (debug-signed, installable for testing)
+      - name: Build optimised Android APKs (arm64 for phones, x86_64 for the emulator test)
         run: |
           export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
-          echo "Using NDK at $NDK_HOME"
           npm install
           npx tauri android init --ci
-          npx tauri android build --apk --debug --target aarch64
+          npx tauri android build --apk --split-per-abi --target aarch64 x86_64
 
-      - name: Upload APK
+      - name: Sign the APKs (test key, generated per build)
+        run: |
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          keytool -genkeypair -keystore test.jks -storepass testpass -keypass testpass -alias test \
+            -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=Diviora test build" -noprompt
+          mkdir apk
+          for abi in arm64 x86_64; do
+            in=$(find src-tauri/gen/android/app/build/outputs/apk -path "*${abi}*" -name "*release*.apk" | head -1)
+            echo "$abi: $in"
+            "$BT/zipalign" -f -p 4 "$in" "apk/aligned-$abi.apk"
+            "$BT/apksigner" sign --ks test.jks --ks-pass pass:testpass --key-pass pass:testpass \
+              --out "apk/Diviora-android-$abi-test.apk" "apk/aligned-$abi.apk"
+          done
+          rm apk/aligned-*.apk
+          ls -la apk
+
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Launch test on an Android emulator (fails on a crash)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
+          script: bash .github/android-smoke-test.sh apk/Diviora-android-x86_64-test.apk
+
+      - name: Upload APKs and emulator log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: diviora-android-${{ github.sha }}
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          path: |
+            apk/Diviora-android-arm64-test.apk
+            logcat.txt
 
   # Publish every green build as the "test-build" pre-release: plain download links
   # (browser, phone, no sign-in) for the Windows installer and the Android APK.
@@ -118,7 +151,7 @@ jobs:
         run: |
           mkdir out
           find dl -name "*-setup.exe" -exec cp {} out/Diviora-Setup-windows-x64.exe \;
-          find dl -name "*.apk" -exec cp {} out/Diviora-android-arm64-test.apk \;
+          find dl -name "Diviora-android-arm64-test.apk" -exec cp {} out/Diviora-android-arm64-test.apk \;
           ls -la out
           test -f out/Diviora-Setup-windows-x64.exe && test -f out/Diviora-android-arm64-test.apk
 

@@ -77,7 +77,6 @@ dependencies = [
  "dirs 5.0.1",
  "diviora-client",
  "diviora-dsp",
- "diviora-dsp-core",
  "getrandom 0.2.17",
  "pbkdf2",
  "rodio",
@@ -810,14 +809,6 @@ dependencies = [
 [[package]]
 name = "diviora-dsp"
 version = "0.1.0"
-
-[[package]]
-name = "diviora-dsp-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "dlopen2"

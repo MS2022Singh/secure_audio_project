@@ -26,7 +26,8 @@ reach users automatically. It ships as one installer package.
 3. `audiodg` runs with a **write-restricted** token: writable folders need `NT SERVICE\Audiosrv`
    or `WRITE RESTRICTED` in their ACL.
 4. FxProperties keys aren't writable by Administrators directly (see the injector's temporary-ACE method).
-5. The old `windows-service` VB-Cable bridge wrote fake "APO" diagnostics. Don't use it.
+5. The old `windows-service` VB-Cable bridge wrote fake "APO" diagnostics. It and the other legacy
+   scripts were removed; they remain in git history (last present in commit `86f1002`).
 
 ## Status (2026-11-21)
 - [x] Native APO loaded, instantiated and processing in `audiodg.exe`. A locked `-24 dB` test config

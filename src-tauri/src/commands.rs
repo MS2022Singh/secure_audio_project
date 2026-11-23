@@ -1,6 +1,6 @@
 use std::fs;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
 
@@ -701,40 +701,6 @@ pub fn verify_watermark_presence(manager: State<'_, Arc<Mutex<PlaybackManager>>>
     Ok(detect_watermark_in_file(&path)?.get("detected").and_then(|v| v.as_bool()).unwrap_or(false))
 }
 
-#[tauri::command]
-pub fn apply_and_lock_dsp_config(config_json: String) -> Result<serde_json::Value, String> {
-    let config: diviora_dsp_core::DspConfig = serde_json::from_str(&config_json)
-        .map_err(|e| format!("Invalid JSON schema: {}", e))?;
-
-    config.validate(48000.0)
-        .map_err(|e| format!("DSP validation failed: {}", e))?;
-
-    let compiled = diviora_dsp_core::compiler::CompiledDspState::compile(&config, 48000.0)
-        .map_err(|e| format!("Coefficient compilation error: {}", e))?;
-
-    let config_dir = Path::new("C:\\ProgramData\\Diviora");
-    if !config_dir.exists() {
-        fs::create_dir_all(config_dir).map_err(|e| e.to_string())?;
-    }
-
-    let mut out_text = String::new();
-    let preamp_db = 20.0 * compiled.preamp_linear.log10();
-    out_text.push_str(&format!("Preamp: {:.2} dB\n", preamp_db));
-
-    for f in compiled.filters.iter().take(64) {
-        out_text.push_str(&format!("Biquad: {:.8} {:.8} {:.8} {:.8} {:.8}\n", f.b0, f.b1, f.b2, f.a1, f.a2));
-    }
-
-    let active_file = config_dir.join("config.txt");
-    fs::write(&active_file, &out_text).map_err(|e| e.to_string())?;
-
-    Ok(serde_json::json!({
-        "revision": config.revision,
-        "status": "applied",
-        "active_file": active_file.to_string_lossy().to_string(),
-        "loaded_revision": config.revision
-    }))
-}
 // ---------------------------------------------------------------- music library
 
 /// Import one audio file into the library. The frontend sends the raw bytes as the request

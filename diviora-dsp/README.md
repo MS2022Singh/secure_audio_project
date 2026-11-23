@@ -14,4 +14,4 @@ cargo test
 cargo run --example eqapo2camilla -- config.txt
 ```
 
-This crate is not yet wired into the app. Wiring it to the native APO (`windows-apo`) and the existing `dsp-core` is the next step.
+Used by the native APO (`windows-apo`, through the C interface in `ffi.rs`), the desktop and Android app (in-app processing, export, analysis) and the watermark detection.
