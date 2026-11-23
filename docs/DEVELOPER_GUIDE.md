@@ -62,8 +62,19 @@ Open it with **Ctrl + Shift + D** (on a phone: tap the **DIVIORA** logo 7 times 
   reports, invites, status) is refused by the app's core unless the panel was unlocked with the
   password in this session; hiding the buttons is not the protection. Five wrong passwords lock the
   login for 60 s, and the count survives restarting the app.
-- **Upload config:** Equalizer APO 1.4.x `.txt` (Preamp, Filter, Channel, Copy, Delay, Device,
-  Include). Unsupported lines (`If`, `GraphicEQ`, `VST`, …) are listed, never silently dropped.
+- **Upload config:** Equalizer APO 1.4.x `.txt`. Select the configuration **together with** any
+  files it uses (its `Include:` .txt files and `Convolution:` .wav impulse responses, multi-select
+  in the file picker); they are embedded in the locked configuration. Supported: Preamp, all
+  Filter types (incl. raw IIR and first-order shelves), GraphicEQ, Convolution, Channel (up to
+  32), Copy, Delay, Device, Include, Stage, If/ElseIf/Else/EndIf, Eval and backtick expressions
+  (evaluated for the real sample rate, channels and device). Only VST and LoudnessCorrection are
+  not supported; they are listed after upload, never silently dropped.
+- **No reboots:** installing, updating and uninstalling restart Windows audio instead (sound stops
+  for a few seconds). Locking a configuration applies in about one second. If the status line says
+  the engine is not loaded, press **Restart Windows Audio**.
+- **Check that it works:** play music, press **Verify System Audio**. Diviora records what the
+  speakers play and reports whether the engine processed it with the locked configuration and
+  whether the watermark is present.
 - **Lock Config:** encrypts the config with DPAPI (machine-bound) and locks it so only Windows
   audio and Administrators can read it. The app must run **as Administrator** for this. With
   developer credentials (section 5), the config is also published to all users.

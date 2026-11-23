@@ -9,8 +9,11 @@ pub mod analysis;
 pub mod camilla;
 pub mod engine;
 pub mod eqapo;
+pub mod expr;
 pub mod ffi;
 pub mod watermark;
+pub mod wav;
+pub mod conv;
 
 pub use engine::Engine;
-pub use eqapo::{parse, EqApoConfig};
+pub use eqapo::{parse, parse_with, Context, EqApoConfig};

@@ -32,7 +32,8 @@ pub fn analyze(text: &str, sample_rate: u32, channels: usize, device: Option<&st
 /// 64..=65536).
 pub fn analyze_with(text: &str, sample_rate: u32, channels: usize, device: Option<&str>,
                     only_channel: Option<usize>, points: usize) -> Analysis {
-    let cfg = eqapo::parse(text, None);
+    let ctx = eqapo::Context { sample_rate, channels, device_name: device.unwrap_or("").to_string(), ..Default::default() };
+    let cfg = eqapo::parse_with(text, None, &ctx);
     let stages = match device {
         Some(d) if !d.is_empty() => cfg.stages_for_device(d),
         _ => cfg.stages_for_all_devices(),
@@ -60,6 +61,19 @@ pub fn analyze_with(text: &str, sample_rate: u32, channels: usize, device: Optio
                     Stage::Biquad { spec, channels } if channels.contains(c) => {
                         db += Coefs::from_spec(spec, sr).magnitude_db(f, sr)
                     }
+                    Stage::Iir { b, a, channels } if channels.contains(c) => {
+                        db += crate::engine::iir_magnitude_db(b, a, f, sr)
+                    }
+                    Stage::GraphicEq { points, channels } if channels.contains(c) => {
+                        db += eqapo::graphic_eq_gain(points, f)
+                    }
+                    Stage::Convolution { ir, channels } if channels.contains(c) => {
+                        let sel = channels.indices(ch);
+                        let j = sel.iter().position(|s| *s == c).unwrap_or(0);
+                        if let Some(h) = ir.channels.get(j % ir.channels.len().max(1)) {
+                            db += ir_magnitude_db(h, f, ir.sample_rate as f64);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -72,14 +86,15 @@ pub fn analyze_with(text: &str, sample_rate: u32, channels: usize, device: Optio
     if !peak.is_finite() {
         peak = 0.0;
     }
-    let latency_ms = stages
-        .iter()
-        .map(|s| if let Stage::Delay { ms, .. } = s { *ms } else { 0.0 })
-        .fold(0.0f64, f64::max);
-
     let t0 = Instant::now();
     let mut engine = Engine::compile(&stages, sample_rate, ch, 0);
     let init_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    // Delay commands plus the latency of GraphicEQ/Convolution stages.
+    let latency_ms = stages
+        .iter()
+        .map(|s| if let Stage::Delay { ms, .. } = s { *ms } else { 0.0 })
+        .fold(0.0f64, f64::max)
+        + engine.latency_samples() as f64 * 1000.0 / sr;
 
     // CPU: process one second of audio in 10 ms blocks and time it.
     let block = (sample_rate as usize / 100).max(1);
@@ -101,9 +116,21 @@ pub fn analyze_with(text: &str, sample_rate: u32, channels: usize, device: Optio
     }
 }
 
+/// Magnitude (dB) of an impulse response at `f` (direct DFT; long IRs are truncated).
+fn ir_magnitude_db(h: &[f32], f: f64, sr: f64) -> f64 {
+    let w = 2.0 * std::f64::consts::PI * f / sr;
+    let (mut re, mut im) = (0.0, 0.0);
+    for (k, v) in h.iter().take(16384).enumerate() {
+        re += *v as f64 * (w * k as f64).cos();
+        im -= *v as f64 * (w * k as f64).sin();
+    }
+    10.0 * (re * re + im * im).max(1e-30).log10()
+}
+
 /// Process interleaved samples of a whole file with a configuration (EQ + watermark).
 pub fn process_file_samples(text: &str, samples: &mut [f32], sample_rate: u32, channels: usize) -> usize {
-    let cfg = eqapo::parse(text, None);
+    let ctx = eqapo::Context { sample_rate, channels, ..Default::default() };
+    let cfg = eqapo::parse_with(text, None, &ctx);
     let stages = cfg.stages_for_all_devices();
     let mut engine = Engine::compile(&stages, sample_rate, channels.clamp(1, 8), 0);
     if channels <= 8 {

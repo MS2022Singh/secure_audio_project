@@ -49,11 +49,11 @@ pub extern "C" fn dvr_engine_create(
         // SAFETY: caller guarantees `text` points to `text_len` readable bytes.
         let bytes = unsafe { std::slice::from_raw_parts(text, text_len) };
         let s = String::from_utf8_lossy(bytes);
-        let cfg = eqapo::parse(&s, None);
-        let stages = match utf16_to_string(device_name) {
-            Some(d) if !d.is_empty() => cfg.stages_for_device(&d),
-            _ => cfg.stages_for_all_devices(),
-        };
+        // If:/Eval:/backticks are evaluated for this exact stream (rate, channels, device).
+        let dev = utf16_to_string(device_name).unwrap_or_default();
+        let ctx = eqapo::Context { sample_rate, channels: channels as usize, device_name: dev.clone(), ..Default::default() };
+        let cfg = eqapo::parse_with(&s, None, &ctx);
+        let stages = if dev.is_empty() { cfg.stages_for_all_devices() } else { cfg.stages_for_device(&dev) };
         let n_stages = stages.len() as u32;
         let n_warn = cfg.warnings.len() as u32;
         if stages.is_empty() {
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn ffi_empty_or_device_filtered_is_null() {
-        let text = b"# nothing\nGraphicEQ: 25 0\n";
+        let text = b"# nothing\nVST: plugin.dll\n";
         let mut wn = 0u32;
         assert!(dvr_engine_create(text.as_ptr(), text.len(), std::ptr::null(), 48000, 2, std::ptr::null_mut(), &mut wn).is_null());
         assert_eq!(wn, 1);

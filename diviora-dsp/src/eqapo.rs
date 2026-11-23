@@ -4,12 +4,59 @@
 //! a [`Stage`] in the parsed pipeline, or a [`Warning`] explaining why it was
 //! not converted. Nothing is dropped silently.
 
+use crate::expr::{self, Value, Vars};
 use crate::watermark::{self, WatermarkSpec};
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
-/// Equalizer APO channel order for up to 7.1: L R C SUB RL RR SL SR.
+/// Equalizer APO channel order for up to 7.1: L R C SUB RL RR SL SR (more channels by number).
 pub const CHANNEL_NAMES: [&str; 8] = ["L", "R", "C", "SUB", "RL", "RR", "SL", "SR"];
-pub const MAX_CHANNELS: usize = 8;
+pub const MAX_CHANNELS: usize = 32;
+
+/// What the configuration is being compiled for. `If:`, `Eval:` and backtick expressions
+/// are evaluated against these values, like Equalizer APO does.
+#[derive(Debug, Clone)]
+pub struct Context {
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub device_name: String,
+    pub connection_name: String,
+    pub device_guid: String,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Context { sample_rate: 48000, channels: 2, device_name: String::new(), connection_name: String::new(), device_guid: String::new() }
+    }
+}
+
+impl Context {
+    fn vars(&self) -> Vars {
+        let mut v = Vars::new();
+        let n = |x: f64| Value::Num(x);
+        let t = |x: &str| Value::Str(x.to_string());
+        v.insert("sampleRate".into(), n(self.sample_rate as f64));
+        v.insert("channelCount".into(), n(self.channels as f64));
+        v.insert("inputChannelCount".into(), n(self.channels as f64));
+        v.insert("outputChannelCount".into(), n(self.channels as f64));
+        v.insert("deviceName".into(), t(&self.device_name));
+        v.insert("connectionName".into(), t(&self.connection_name));
+        v.insert("deviceGuid".into(), t(&self.device_guid));
+        v.insert("deviceString".into(), t(&format!("{} {} {}", self.device_name, self.connection_name, self.device_guid)));
+        v.insert("stage".into(), t("pre-mix"));
+        v.insert("unofficial".into(), n(0.0));
+        v
+    }
+}
+
+/// An impulse response (per channel samples) and its sample rate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImpulseResponse {
+    pub name: String,
+    pub sample_rate: u32,
+    pub channels: Vec<Vec<f32>>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChannelSel {
@@ -35,6 +82,9 @@ pub enum FilterKind {
     Peaking,
     LowShelf,
     HighShelf,
+    /// First-order shelves (`LS 6dB` / `HS 6dB`).
+    LowShelf1,
+    HighShelf1,
     LowPass,
     HighPass,
     BandPass,
@@ -68,6 +118,12 @@ pub enum Stage {
     Mix { routes: Vec<(usize, Vec<(usize, f64)>)> },
     /// Diviora frequency-signature watermark (DivioraWatermark: / DivioraWatermarkClip:).
     Watermark(WatermarkSpec),
+    /// `Filter: ON IIR Order n Coefficients b0..bn a0..an` (normalised so a0 == 1).
+    Iir { b: Vec<f64>, a: Vec<f64>, channels: ChannelSel },
+    /// `GraphicEQ: f1 g1; f2 g2; ...` – linear-phase FIR, gains interpolated in dB over log frequency.
+    GraphicEq { points: Vec<(f64, f64)>, channels: ChannelSel },
+    /// `Convolution: file.wav` – impulse response uploaded with the configuration.
+    Convolution { ir: Arc<ImpulseResponse>, channels: ChannelSel },
 }
 
 /// Which output device a stage applies to (`Device:` command).
@@ -150,19 +206,78 @@ pub type IncludeResolver<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 const MAX_INCLUDE_DEPTH: usize = 8;
 
+/// One open `If:` block.
+struct Cond {
+    parent_active: bool,
+    taken: bool,
+    active: bool,
+}
+
 struct ParseState {
     channels: ChannelSel,
     device: DeviceSel,
-    /// >0 while inside an `If:` block we cannot evaluate.
-    skip_depth: usize,
+    conds: Vec<Cond>,
+    vars: Vars,
+    /// Files uploaded with the configuration (`DivioraFile:` lines): lower-case file name -> bytes.
+    files: HashMap<String, Arc<Vec<u8>>>,
 }
 
-/// Parse an Equalizer APO configuration text.
+impl ParseState {
+    fn active(&self) -> bool {
+        self.conds.last().map_or(true, |c| c.active)
+    }
+}
+
+/// Parse an Equalizer APO configuration text for a typical output (48 kHz, stereo, no
+/// device name). Use [`parse_with`] when the real output is known.
 pub fn parse(text: &str, resolver: Option<IncludeResolver>) -> EqApoConfig {
+    parse_with(text, resolver, &Context::default())
+}
+
+/// Parse for a concrete output: `If:`/`Eval:`/backticks use `ctx`.
+pub fn parse_with(text: &str, resolver: Option<IncludeResolver>, ctx: &Context) -> EqApoConfig {
     let mut cfg = EqApoConfig::default();
-    let mut st = ParseState { channels: ChannelSel::All, device: DeviceSel::All, skip_depth: 0 };
+    let mut st = ParseState {
+        channels: ChannelSel::All,
+        device: DeviceSel::All,
+        conds: Vec::new(),
+        vars: ctx.vars(),
+        files: embedded_files(text),
+    };
     parse_into(text, "config", resolver, 0, &mut st, &mut cfg);
+    if !st.conds.is_empty() {
+        warn(&mut cfg, "config", 0, "If:", "missing EndIf: (block closed at end of file)");
+    }
     cfg
+}
+
+/// `DivioraFile: name | base64` lines: files (include texts, impulse responses) uploaded
+/// together with the configuration, so the locked configuration is self-contained.
+pub fn embedded_files(text: &str) -> HashMap<String, Arc<Vec<u8>>> {
+    let mut m = HashMap::new();
+    for l in text.lines() {
+        let l = l.trim();
+        if l.len() > 12 && l[..12].eq_ignore_ascii_case("DivioraFile:") {
+            if let Some((name, data)) = l[12..].rsplit_once('|') {
+                if let Some(bytes) = watermark::base64_decode(data.trim()) {
+                    m.insert(file_key(name), Arc::new(bytes));
+                }
+            }
+        }
+    }
+    m
+}
+
+/// The line that embeds a file in a configuration.
+pub fn embed_file_line(name: &str, bytes: &[u8]) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name).replace('|', "_");
+    format!("DivioraFile: {} | {}", base, watermark::base64_encode(bytes))
+}
+
+/// Files are matched by name only (Equalizer APO paths point into the developer's PC).
+fn file_key(name: &str) -> String {
+    let n = name.trim().trim_matches('"');
+    n.rsplit(['/', '\\']).next().unwrap_or(n).to_lowercase()
 }
 
 fn warn(cfg: &mut EqApoConfig, file: &str, line: usize, text: &str, reason: impl Into<String>) {
@@ -193,31 +308,55 @@ fn parse_into(
             continue;
         };
         let cmd_full = line[..colon].trim();
-        let args = line[colon + 1..].trim();
         // "Filter 3" -> "filter"
         let cmd = cmd_full.split_whitespace().next().unwrap_or("").to_lowercase();
+        let raw_args = line[colon + 1..].trim();
 
-        // Conditional blocks: we cannot evaluate runtime expressions, so the whole
-        // block is skipped and reported.
+        // Conditional blocks, evaluated for the real output (sample rate, channels, device).
         match cmd.as_str() {
             "if" => {
-                if st.skip_depth == 0 {
-                    warn(cfg, file, lineno, line,
-                        "conditional block not evaluated; its contents were skipped (split it into per-device profiles instead)");
-                }
-                st.skip_depth += 1;
+                let parent = st.active();
+                let v = if parent { cond_value(raw_args, st, cfg, file, lineno, line) } else { false };
+                st.conds.push(Cond { parent_active: parent, taken: v, active: v });
                 continue;
             }
-            "elseif" | "else" => continue,
+            "elseif" => {
+                let Some(top) = st.conds.last() else { warn(cfg, file, lineno, line, "ElseIf: without If:"); continue };
+                let (parent, taken) = (top.parent_active, top.taken);
+                let v = if parent && !taken { cond_value(raw_args, st, cfg, file, lineno, line) } else { false };
+                let top = st.conds.last_mut().unwrap();
+                top.active = v;
+                top.taken |= v;
+                continue;
+            }
+            "else" => {
+                match st.conds.last_mut() {
+                    Some(top) => { top.active = top.parent_active && !top.taken; top.taken = true; }
+                    None => warn(cfg, file, lineno, line, "Else: without If:"),
+                }
+                continue;
+            }
             "endif" => {
-                st.skip_depth = st.skip_depth.saturating_sub(1);
+                if st.conds.pop().is_none() { warn(cfg, file, lineno, line, "EndIf: without If:"); }
                 continue;
             }
             _ => {}
         }
-        if st.skip_depth > 0 {
+        if !st.active() {
             continue;
         }
+        if cmd == "eval" {
+            if let Err(e) = expr::eval_assignments(raw_args, &mut st.vars) {
+                warn(cfg, file, lineno, line, format!("Eval: {}", e));
+            }
+            continue;
+        }
+        // `expression` substitutions inside any other command.
+        let args_owned = match expr::substitute_backticks(raw_args, &st.vars) {
+            Ok(a) => a,
+            Err(e) => { warn(cfg, file, lineno, line, format!("expression: {}", e)); continue; }
+        };
+        let args = args_owned.as_str();
 
         match cmd.as_str() {
             "preamp" => match parse_db(args) {
@@ -225,7 +364,8 @@ fn parse_into(
                 None => warn(cfg, file, lineno, line, "could not read preamp gain"),
             },
             "filter" => match parse_filter(args) {
-                Ok(Some(spec)) => cfg.stages.push((st.device.clone(), Stage::Biquad { spec, channels: st.channels.clone() })),
+                Ok(Some(FilterDef::Biquad(spec))) => cfg.stages.push((st.device.clone(), Stage::Biquad { spec, channels: st.channels.clone() })),
+                Ok(Some(FilterDef::Iir(b, a))) => cfg.stages.push((st.device.clone(), Stage::Iir { b, a, channels: st.channels.clone() })),
                 Ok(None) => {} // filter switched OFF
                 Err(e) => warn(cfg, file, lineno, line, e),
             },
@@ -255,10 +395,13 @@ fn parse_into(
                     warn(cfg, file, lineno, line, "include nesting too deep");
                     continue;
                 }
-                let name = args.trim().trim_matches('"');
-                match resolver.and_then(|r| r(name)) {
-                    Some(sub) => parse_into(&sub, name, resolver, depth + 1, st, cfg),
-                    None => warn(cfg, file, lineno, line, "included file not available; upload its contents too"),
+                let name = args.trim().trim_matches('"').to_string();
+                let sub = resolver.and_then(|r| r(&name)).or_else(|| {
+                    st.files.get(&file_key(&name)).map(|b| String::from_utf8_lossy(b).into_owned())
+                });
+                match sub {
+                    Some(sub) => parse_into(&sub, &name, resolver, depth + 1, st, cfg),
+                    None => warn(cfg, file, lineno, line, "included file not available: upload it together with the configuration"),
                 }
             }
             "diviorawatermark" => match watermark::parse_watermark_line(args) {
@@ -273,10 +416,27 @@ fn parse_into(
                     (Err(e), _) => warn(cfg, file, lineno, cmd_full, e),
                 }
             }
-            "stage" => {} // pre-mix/post-mix placement has no meaning outside audiodg
-            "graphiceq" => warn(cfg, file, lineno, line, "GraphicEQ is not converted yet; export it as parametric filters (e.g. from AutoEq/REW)"),
-            "convolution" => warn(cfg, file, lineno, line, "convolution is not supported by the built-in engine"),
-            "eval" | "loudnesscorrection" | "vst" => warn(cfg, file, lineno, line, "not supported outside Equalizer APO"),
+            "stage" => {} // Diviora runs as one stream effect; the placement hint has no effect
+            "diviorafile" => {} // embedded file, collected before parsing
+            "graphiceq" => match parse_graphic_eq(args) {
+                Ok(points) => cfg.stages.push((st.device.clone(), Stage::GraphicEq { points, channels: st.channels.clone() })),
+                Err(e) => warn(cfg, file, lineno, line, e),
+            },
+            "convolution" => {
+                let name = args.trim().trim_matches('"');
+                match st.files.get(&file_key(name)) {
+                    Some(bytes) => match crate::wav::decode(bytes) {
+                        Ok((rate, chans)) => {
+                            let ir = ImpulseResponse { name: file_key(name), sample_rate: rate, channels: chans };
+                            cfg.stages.push((st.device.clone(), Stage::Convolution { ir: Arc::new(ir), channels: st.channels.clone() }));
+                        }
+                        Err(e) => warn(cfg, file, lineno, line, format!("impulse response: {}", e)),
+                    },
+                    None => warn(cfg, file, lineno, line, "impulse response file not available: upload the .wav together with the configuration"),
+                }
+            }
+            "loudnesscorrection" => warn(cfg, file, lineno, line, "LoudnessCorrection follows the Windows volume slider and is not supported; use filters instead"),
+            "vst" => warn(cfg, file, lineno, line, "VST plug-ins cannot be loaded into the Diviora engine"),
             _ => warn(cfg, file, lineno, line, "unknown command"),
         }
     }
@@ -292,6 +452,48 @@ impl WithChannels for Stage {
             other => other,
         }
     }
+}
+
+fn cond_value(args: &str, st: &ParseState, cfg: &mut EqApoConfig, file: &str, lineno: usize, line: &str) -> bool {
+    match expr::eval(args, &st.vars) {
+        Ok(v) => v.truthy(),
+        Err(e) => {
+            warn(cfg, file, lineno, line, format!("condition could not be evaluated ({}); treated as false", e));
+            false
+        }
+    }
+}
+
+/// `GraphicEQ: 25 -1.5; 40 0; 63 2.1` -> [(Hz, dB)], sorted by frequency.
+fn parse_graphic_eq(args: &str) -> Result<Vec<(f64, f64)>, String> {
+    let mut pts = Vec::new();
+    for part in args.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+        let mut it = part.split_whitespace();
+        let f = it.next().and_then(parse_num).ok_or_else(|| format!("bad GraphicEQ point '{}'", part))?;
+        let g = it.next().and_then(parse_db).ok_or_else(|| format!("bad GraphicEQ point '{}'", part))?;
+        if f <= 0.0 || !(-100.0..=40.0).contains(&g) {
+            return Err(format!("GraphicEQ point '{}' out of range", part));
+        }
+        pts.push((f, g));
+    }
+    if pts.is_empty() {
+        return Err("empty GraphicEQ".into());
+    }
+    pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    Ok(pts)
+}
+
+/// Gain of a GraphicEQ at `f`: linear in dB over log frequency, constant outside the points.
+pub fn graphic_eq_gain(points: &[(f64, f64)], f: f64) -> f64 {
+    if points.is_empty() { return 0.0; }
+    if f <= points[0].0 { return points[0].1; }
+    let last = points[points.len() - 1];
+    if f >= last.0 { return last.1; }
+    let i = points.partition_point(|p| p.0 <= f);
+    let (a, b) = (points[i - 1], points[i]);
+    if b.0 <= a.0 { return b.1; }
+    let t = (f.ln() - a.0.ln()) / (b.0.ln() - a.0.ln());
+    a.1 + t * (b.1 - a.1)
 }
 
 fn parse_num(s: &str) -> Option<f64> {
@@ -354,8 +556,49 @@ pub fn bw_oct_to_q(n: f64) -> f64 {
     p.sqrt() / (p - 1.0)
 }
 
-fn parse_filter(args: &str) -> Result<Option<BiquadSpec>, String> {
+pub enum FilterDef {
+    Biquad(BiquadSpec),
+    Iir(Vec<f64>, Vec<f64>),
+}
+
+/// `IIR Order 2 Coefficients b0 b1 b2 a0 a1 a2`
+fn parse_iir(toks: &[&str]) -> Result<FilterDef, String> {
+    let mut order = None;
+    let mut coefs = Vec::new();
+    let mut i = 0;
+    while i < toks.len() {
+        if toks[i].eq_ignore_ascii_case("Order") {
+            order = toks.get(i + 1).and_then(|v| v.parse::<usize>().ok());
+            i += 2;
+        } else if toks[i].eq_ignore_ascii_case("Coefficients") {
+            coefs = toks[i + 1..].iter().map(|t| parse_num(t)).collect::<Option<Vec<f64>>>()
+                .ok_or("bad IIR coefficient")?;
+            break;
+        } else {
+            i += 1;
+        }
+    }
+    let order = order.ok_or("IIR filter without 'Order'")?;
+    if order == 0 || order > 32 { return Err(format!("IIR order {} not supported (1..32)", order)); }
+    if coefs.len() != 2 * (order + 1) {
+        return Err(format!("IIR order {} needs {} coefficients, found {}", order, 2 * (order + 1), coefs.len()));
+    }
+    let (b, a) = coefs.split_at(order + 1);
+    if a[0] == 0.0 { return Err("IIR coefficient a0 must not be 0".into()); }
+    let a0 = a[0];
+    Ok(FilterDef::Iir(b.iter().map(|v| v / a0).collect(), a.iter().map(|v| v / a0).collect()))
+}
+
+fn parse_filter(args: &str) -> Result<Option<FilterDef>, String> {
     let toks: Vec<&str> = args.split_whitespace().collect();
+    if let Some(p) = toks.iter().position(|t| t.eq_ignore_ascii_case("IIR")) {
+        if toks.first().map_or(false, |t| t.eq_ignore_ascii_case("OFF")) { return Ok(None); }
+        return parse_iir(&toks[p + 1..]).map(Some);
+    }
+    parse_biquad(&toks).map(|o| o.map(FilterDef::Biquad))
+}
+
+fn parse_biquad(toks: &[&str]) -> Result<Option<BiquadSpec>, String> {
     let mut i = 0;
     match toks.first().map(|t| t.to_uppercase()) {
         Some(ref t) if t == "ON" => i += 1,
@@ -375,9 +618,12 @@ fn parse_filter(args: &str) -> Result<Option<BiquadSpec>, String> {
         "NO" => FilterKind::Notch,
         "AP" => FilterKind::AllPass,
         "NONE" => return Ok(None),
-        "IIR" => return Err("raw IIR coefficient filters are not converted".into()),
         other => return Err(format!("filter type '{}' not supported", other)),
     };
+    // Plain "LS"/"HS" followed by "6dB" are first-order shelves; "12dB" is the usual
+    // second-order shelf (Q 0.7071).
+    let plain_shelf = ty == "LS" || ty == "HS";
+    let mut kind = kind;
 
     let mut freq = None;
     let mut gain = 0.0;
@@ -385,16 +631,25 @@ fn parse_filter(args: &str) -> Result<Option<BiquadSpec>, String> {
 
     // Shelves may carry a slope right after the type: "LSC 12 dB Fc ..." / "LS 6dB Fc ...".
     if matches!(kind, FilterKind::LowShelf | FilterKind::HighShelf) {
+        let mut slope = None;
         if let Some(t) = toks.get(i) {
-            if let Some(s) = t.strip_suffix("dB").and_then(parse_num) {
-                shape = Some(Shape::SlopeDbPerOct(s));
+            if let Some(s) = t.strip_suffix("dB").or_else(|| t.strip_suffix("db")).and_then(parse_num) {
+                slope = Some(s);
                 i += 1;
             } else if let (Some(v), Some(u)) = (parse_num(t), toks.get(i + 1)) {
                 if u.eq_ignore_ascii_case("dB") {
-                    shape = Some(Shape::SlopeDbPerOct(v));
+                    slope = Some(v);
                     i += 2;
                 }
             }
+        }
+        match slope {
+            Some(s) if plain_shelf && (s - 6.0).abs() < 1e-9 => {
+                kind = if kind == FilterKind::LowShelf { FilterKind::LowShelf1 } else { FilterKind::HighShelf1 };
+            }
+            Some(s) if plain_shelf && (s - 12.0).abs() < 1e-9 => shape = Some(Shape::Q(std::f64::consts::FRAC_1_SQRT_2)),
+            Some(s) => shape = Some(Shape::SlopeDbPerOct(s)),
+            None => {}
         }
     }
 
@@ -539,11 +794,12 @@ mod tests {
             "Device: Headphones\nPreamp: -2 dB\nDevice: all\nInclude: bass.txt\nInclude: missing.txt\nIf: sampleRate == 44100\nPreamp: -99 dB\nEndIf:\nGraphicEQ: 25 0; 40 1\nFoo: bar\n",
             Some(&inc),
         );
-        assert_eq!(cfg.stages.len(), 2);
-        assert_eq!(cfg.stages_for_device("Speakers (Realtek)").len(), 1);
-        assert_eq!(cfg.stages_for_device("Headphones (USB)").len(), 2);
+        // If: is evaluated (48 kHz here, so its block is skipped); GraphicEQ is converted.
+        assert_eq!(cfg.stages.len(), 3);
+        assert_eq!(cfg.stages_for_device("Speakers (Realtek)").len(), 2);
+        assert_eq!(cfg.stages_for_device("Headphones (USB)").len(), 3);
         let reasons: Vec<_> = cfg.warnings.iter().map(|w| w.text.clone()).collect();
-        assert_eq!(reasons, vec!["Include: missing.txt", "If: sampleRate == 44100", "GraphicEQ: 25 0; 40 1", "Foo: bar"]);
+        assert_eq!(reasons, vec!["Include: missing.txt", "Foo: bar"]);
     }
 
     #[test]

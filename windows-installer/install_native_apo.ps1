@@ -10,7 +10,7 @@
         4. Creates the locked config folder %ProgramData%\Diviora\apo
            (SYSTEM + Administrators full, Windows audio read-only, users no access).
         5. Binds the APO to the default speakers' stream-effect slot ({d04e05a6-...},5).
-        Then reboot once. If anything fails after the backup, it rolls back automatically.
+        Then Windows audio is restarted (no reboot). If anything fails after the backup, it rolls back automatically.
     -Verify    Reads the status the APO writes from inside audiodg.exe and explains it.
     -Uninstall Restores the backed-up values, unregisters and removes the DLL.
 
@@ -19,7 +19,7 @@
         powershell -ExecutionPolicy Bypass -File windows-installer\install_native_apo.ps1 -Verify
         powershell -ExecutionPolicy Bypass -File windows-installer\install_native_apo.ps1 -Uninstall
 #>
-param([switch]$Verify, [switch]$Uninstall, [switch]$Diagnose, [string]$TestConfig, [switch]$ClearConfig, [switch]$Canary)
+param([switch]$Verify, [switch]$Uninstall, [switch]$Diagnose, [string]$TestConfig, [switch]$ClearConfig, [switch]$Canary, [switch]$RestartAudio)
 $ErrorActionPreference = 'Stop'
 
 # Must run as a 64-bit process: a 32-bit PowerShell (e.g. started by the 32-bit Setup.exe)
@@ -84,6 +84,18 @@ function Ensure-AudioRunning {
         }
     }
 }
+# Windows re-reads the speakers' effect lists (and loads/unloads DivioraAPO.dll) when its
+# audio services restart, so no reboot is needed. Sound stops for a few seconds.
+function Restart-WindowsAudio {
+    Say '  Restarting Windows audio (sound stops for a few seconds)...' 'Cyan'
+    try {
+        Restart-Service AudioEndpointBuilder -Force   # Windows Audio depends on it and restarts too
+    } catch {
+        Say "  Could not restart the audio services: $($_.Exception.Message)" 'Yellow'
+    }
+    Ensure-AudioRunning
+}
+
 function Install-SyncService {
     if (-not (Test-Path $SyncExe)) { Say '  (diviora-sync.exe not built: automatic config updates not installed)' 'DarkGray'; return }
     New-Item -ItemType Directory -Force -Path $ClientDir | Out-Null
@@ -184,8 +196,8 @@ if ($Verify) {
     }
     if (-not (Test-Path $StatusFile)) {
         Say 'No status file yet: the APO has not run inside audiodg.exe.' 'Yellow'
-        Say 'Reboot after install, play audio (e.g. YouTube in Chrome) for 5 seconds, then run -Verify again.'
-        Say 'Still nothing after a reboot? Run: install_native_apo.ps1 -Diagnose'
+        Say 'Run install_native_apo.ps1 -RestartAudio, play audio (e.g. YouTube) for 5 seconds, then run -Verify again.'
+        Say 'Still nothing? Reboot once, or run: install_native_apo.ps1 -Diagnose'
         exit 1
     }
     $s = Get-Content $StatusFile -Raw | ConvertFrom-Json
@@ -201,6 +213,12 @@ if ($Verify) {
 }
 
 Assert-Admin
+
+if ($RestartAudio) {
+    Restart-WindowsAudio
+    Say 'Windows audio restarted. Play something; Diviora shows the engine as running within a few seconds.' 'Green'
+    exit 0
+}
 
 # ------------------------------------------------------------------ Uninstall
 if ($Uninstall) {
@@ -218,8 +236,8 @@ if ($Uninstall) {
         Remove-Item $TargetDll -Force
         Start-Service Audiosrv
     }
-    Ensure-AudioRunning
-    Say 'Uninstalled. Reboot once so Windows rebuilds the audio graph. The locked config in' 'Green'
+    Restart-WindowsAudio
+    Say 'Uninstalled; Windows audio restarted with the original speaker settings. The locked config in' 'Green'
     Say "$ApoDir is kept (encrypted); delete it as Administrator if you no longer need it."
     exit 0
 }
@@ -291,9 +309,10 @@ catch {
     exit 1
 }
 
+Restart-WindowsAudio
 Say ''
-Say 'Installed. Now:' 'Green'
-Say '  1. Reboot (Windows only rebuilds the audio graph on reboot).'
-Say '  2. Play YouTube in Chrome, then run:  install_native_apo.ps1 -Verify'
-Say '  3. In Diviora (run as Administrator): upload your config, press Lock Config.'
-Say '  If anything sounds wrong:            install_native_apo.ps1 -Uninstall, then reboot.'
+Say 'Installed and active (no reboot needed). Now:' 'Green'
+Say '  1. Play YouTube in Chrome, then run:  install_native_apo.ps1 -Verify'
+Say '  2. In Diviora (run as Administrator): upload your config, press Lock Config.'
+Say '  If Windows audio did not pick it up, use "Restart Windows audio" in Diviora or reboot once.'
+Say '  If anything sounds wrong:            install_native_apo.ps1 -Uninstall'

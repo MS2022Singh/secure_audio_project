@@ -20,8 +20,7 @@
     MessageBox MB_ICONEXCLAMATION|MB_OK "The system-wide audio engine could not be installed (code $0).$\r$\nThe player still works. Details: C:\ProgramData\Diviora\install.log$\r$\nSee the User Manual, section Troubleshooting." /SD IDOK
     Goto diviora_done
   diviora_ok:
-    ; Windows rebuilds the audio graph only on reboot.
-    SetRebootFlag true
+    ; The install script restarts Windows audio itself: no reboot needed.
   diviora_done:
 !macroend
 
@@ -30,5 +29,4 @@
   !insertmacro DIVIORA_FIND_PS
   nsExec::ExecToLog '"$R9" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\apo\install_native_apo.ps1" -Uninstall'
   Pop $0
-  SetRebootFlag true
 !macroend

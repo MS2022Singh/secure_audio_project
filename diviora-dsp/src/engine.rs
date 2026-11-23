@@ -3,9 +3,11 @@
 //! `Engine::compile` allocates everything up front; `Engine::process_interleaved`
 //! does not allocate, lock or perform I/O, so it is safe to call from an audio callback.
 
+use crate::conv::{graphic_eq_fir, FirStage};
 use crate::eqapo::{BiquadSpec, ChannelSel, FilterKind, Shape, Stage, MAX_CHANNELS};
 use crate::watermark::Watermarker;
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Coefs {
@@ -32,6 +34,18 @@ impl Coefs {
             }
         };
         let sa = 2.0 * a.sqrt() * alpha;
+        // First-order shelves (bilinear transform, transition centred on Fc).
+        if matches!(spec.kind, FilterKind::LowShelf1 | FilterKind::HighShelf1) {
+            let t = (PI * f / sample_rate).tan();
+            let g = 10f64.powf(spec.gain_db / 20.0).sqrt(); // sqrt of the linear shelf gain
+            let (b0, b1, a0, a1) = if spec.kind == FilterKind::LowShelf1 {
+                (1.0 + g * t, g * t - 1.0, 1.0 + t / g, t / g - 1.0)
+            } else {
+                let gg = g * g;
+                (gg * (1.0 + t / g), gg * (t / g - 1.0), 1.0 + g * t, g * t - 1.0)
+            };
+            return Coefs { b0: b0 / a0, b1: b1 / a0, b2: 0.0, a1: a1 / a0, a2: 0.0 };
+        }
         let (b0, b1, b2, a0, a1, a2) = match spec.kind {
             FilterKind::Peaking => (1.0 + alpha * a, -2.0 * cs, 1.0 - alpha * a, 1.0 + alpha / a, -2.0 * cs, 1.0 - alpha / a),
             FilterKind::LowShelf => (
@@ -55,6 +69,7 @@ impl Coefs {
             FilterKind::BandPass => (alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
             FilterKind::Notch => (1.0, -2.0 * cs, 1.0, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
             FilterKind::AllPass => (1.0 - alpha, -2.0 * cs, 1.0 + alpha, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
+            FilterKind::LowShelf1 | FilterKind::HighShelf1 => unreachable!(),
         };
         Coefs { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 }
     }
@@ -72,12 +87,29 @@ impl Coefs {
     }
 }
 
+/// Magnitude in dB of a general IIR (b, a with a[0] == 1) at `freq`.
+pub fn iir_magnitude_db(b: &[f64], a: &[f64], freq: f64, sample_rate: f64) -> f64 {
+    let w = 2.0 * PI * freq / sample_rate;
+    let eval = |c: &[f64]| {
+        let (mut re, mut im) = (0.0, 0.0);
+        for (k, v) in c.iter().enumerate() {
+            re += v * (w * k as f64).cos();
+            im -= v * (w * k as f64).sin();
+        }
+        re * re + im * im
+    };
+    10.0 * (eval(b) / eval(a).max(1e-300)).log10()
+}
+
 enum CStage {
     Gain { lin: [f32; MAX_CHANNELS] },
     Biquad { c: Coefs, on: [bool; MAX_CHANNELS], z: [[f64; 2]; MAX_CHANNELS] },
     Delay { lines: Vec<Option<(Vec<f32>, usize)>> },
-    Mix { m: [[f32; MAX_CHANNELS]; MAX_CHANNELS] },
+    Mix { m: Box<[[f32; MAX_CHANNELS]; MAX_CHANNELS]> },
     Watermark(Box<Watermarker>),
+    /// General IIR, transposed direct form II; `z[c]` has `order` state values.
+    Iir { b: Vec<f64>, a: Vec<f64>, on: [bool; MAX_CHANNELS], z: Vec<Vec<f64>> },
+    Fir(Box<FirStage>),
 }
 
 pub struct Engine {
@@ -127,7 +159,7 @@ impl Engine {
                     out.push(CStage::Delay { lines });
                 }
                 Stage::Mix { routes } => {
-                    let mut m = [[0.0f32; MAX_CHANNELS]; MAX_CHANNELS];
+                    let mut m = Box::new([[0.0f32; MAX_CHANNELS]; MAX_CHANNELS]);
                     for (i, row) in m.iter_mut().enumerate() { row[i] = 1.0; }
                     for (dest, srcs) in routes {
                         if *dest >= MAX_CHANNELS { continue; }
@@ -139,6 +171,32 @@ impl Engine {
                     out.push(CStage::Mix { m });
                 }
                 Stage::Watermark(spec) => out.push(CStage::Watermark(Box::new(Watermarker::new(spec, sample_rate)))),
+                Stage::Iir { b, a, channels: sel } => {
+                    let order = b.len().max(a.len()) - 1;
+                    let mut bb = b.clone();
+                    let mut aa = a.clone();
+                    bb.resize(order + 1, 0.0);
+                    aa.resize(order + 1, 0.0);
+                    out.push(CStage::Iir { b: bb, a: aa, on: mask(sel, channels), z: vec![vec![0.0; order.max(1)]; channels] });
+                }
+                Stage::GraphicEq { points, channels: sel } => {
+                    let fir = Arc::new(graphic_eq_fir(points, sample_rate));
+                    let group_delay = (fir.len() - 1) / 2;
+                    let m = mask(sel, channels);
+                    let firs = (0..channels).map(|c| if m[c] { Some(fir.clone()) } else { None }).collect();
+                    out.push(CStage::Fir(Box::new(FirStage::new(firs, group_delay))));
+                }
+                Stage::Convolution { ir, channels: sel } => {
+                    let irs: Vec<Arc<Vec<f32>>> = ir.channels.iter()
+                        .map(|c| Arc::new(crate::wav::resample(c, ir.sample_rate, sample_rate)))
+                        .collect();
+                    if irs.is_empty() { continue; }
+                    let selected = sel.indices(channels);
+                    let firs = (0..channels)
+                        .map(|c| selected.iter().position(|s| *s == c).map(|j| irs[j % irs.len()].clone()))
+                        .collect();
+                    out.push(CStage::Fir(Box::new(FirStage::new(firs, 0))));
+                }
             }
         }
         Engine { channels, sample_rate, stages: out, revision }
@@ -147,6 +205,11 @@ impl Engine {
     pub fn channels(&self) -> usize { self.channels }
     pub fn sample_rate(&self) -> u32 { self.sample_rate }
     pub fn is_bypass(&self) -> bool { self.stages.is_empty() }
+
+    /// Added latency in samples (FIR stages: one block plus their group delay).
+    pub fn latency_samples(&self) -> usize {
+        self.stages.iter().map(|s| if let CStage::Fir(f) = s { f.latency } else { 0 }).sum()
+    }
 
     /// Process interleaved samples in place. `buf.len()` must be a multiple of `channels()`.
     pub fn process_interleaved(&mut self, buf: &mut [f32]) {
@@ -189,6 +252,21 @@ impl Engine {
                     }
                 }
                 CStage::Watermark(w) => w.process_frame(&mut frame[..n]),
+                CStage::Iir { b, a, on, z } => {
+                    let order = b.len() - 1;
+                    for c in 0..n {
+                        if !on[c] { continue; }
+                        let zc = &mut z[c];
+                        let x = frame[c] as f64;
+                        let y = b[0] * x + zc[0];
+                        for k in 1..order {
+                            zc[k - 1] = b[k] * x - a[k] * y + zc[k];
+                        }
+                        zc[order - 1] = b[order] * x - a[order] * y;
+                        frame[c] = if y.is_finite() { y as f32 } else { zc.iter_mut().for_each(|v| *v = 0.0); 0.0 };
+                    }
+                }
+                CStage::Fir(f) => f.process_frame(&mut frame[..n]),
                 CStage::Mix { m } => {
                     let mut tmp = [0.0f32; MAX_CHANNELS];
                     tmp[..n].copy_from_slice(&frame[..n]);
@@ -273,6 +351,51 @@ mod tests {
         let mut buf = [1.0f32, 1.0, 0.0, 0.0, 0.0, 0.0];
         e.process_interleaved(&mut buf);
         assert_eq!(buf, [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn iir_first_order_shelf_graphic_eq_and_conditions() {
+        // Raw IIR equal to a known biquad.
+        let spec = BiquadSpec { kind: FilterKind::Peaking, freq: 1000.0, gain_db: -12.0, shape: Shape::Q(1.0) };
+        let c = Coefs::from_spec(&spec, 48000.0);
+        let text = format!("Filter: ON IIR Order 2 Coefficients {} {} {} 1 {} {}", c.b0, c.b1, c.b2, c.a1, c.a2);
+        let cfg = parse(&text, None);
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 1);
+        assert!((sine_rms_db(&mut e, 1000.0) + 12.0).abs() < 0.2);
+
+        // First-order low shelf: full gain far below Fc, half (in dB) at Fc.
+        let s1 = BiquadSpec { kind: FilterKind::LowShelf1, freq: 200.0, gain_db: 6.0, shape: Shape::Q(0.7) };
+        let k = Coefs::from_spec(&s1, 48000.0);
+        assert!((k.magnitude_db(5.0, 48000.0) - 6.0).abs() < 0.1);
+        assert!((k.magnitude_db(200.0, 48000.0) - 3.0).abs() < 0.1);
+        assert!(k.magnitude_db(20000.0, 48000.0).abs() < 0.1);
+        let cfg = parse("Filter: ON LS 6dB Fc 200 Hz Gain 6 dB\nFilter: ON HS 6dB Fc 5000 Hz Gain -3 dB", None);
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+
+        // GraphicEQ through the engine (latency-compensated measurement).
+        let cfg = parse("GraphicEQ: 20 -10; 20000 -10", None);
+        let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 1);
+        assert!(e.latency_samples() > 4096);
+        assert!((sine_rms_db(&mut e, 1000.0) + 10.0).abs() < 0.3);
+
+        // If/Else picks the branch for the real sample rate.
+        let text = "If: sampleRate == 44100\nPreamp: -1 dB\nElseIf: sampleRate == 48000\nPreamp: -2 dB\nElse:\nPreamp: -3 dB\nEndIf:";
+        let ctx = crate::eqapo::Context { sample_rate: 48000, ..Default::default() };
+        let cfg = crate::eqapo::parse_with(text, None, &ctx);
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        assert_eq!(cfg.stages.len(), 1);
+        assert_eq!(cfg.stages[0].1, Stage::Gain { gain_db: -2.0, channels: ChannelSel::All });
+    }
+
+    #[test]
+    fn convolution_from_embedded_wav() {
+        let ir = crate::analysis::wav_f32(&[0.5, 0.0, 0.0, 0.0], 48000, 1);
+        let text = format!("{}\nConvolution: C:\\Users\\dev\\room.wav\n", crate::eqapo::embed_file_line("room.wav", &ir));
+        let cfg = parse(&text, None);
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 1);
+        assert!((sine_rms_db(&mut e, 1000.0) + 6.02).abs() < 0.1);
     }
 
     #[test]

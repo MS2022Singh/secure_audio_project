@@ -287,7 +287,7 @@
                         <button id="btnLockApoConfig" class="btn-outline-green">🔒 Lock Config</button>
                         <button id="btnRemoveApoFile" class="btn-red-outline">✕ Remove Config File</button>
                     </div>
-                    <input type="file" id="apoFileHiddenLoader" style="display:none;" accept=".txt,.apo" />
+                    <input type="file" id="apoFileHiddenLoader" style="display:none;" accept=".txt,.apo,.wav" multiple title="Select the configuration, plus any Include .txt files and Convolution .wav files it uses" />
                     
                     <div id="lblApoSyncStatus" style="color:var(--primary-green); font-weight:700; font-size: 13px; margin-bottom: 4px;">
                         ● No configuration uploaded yet.
@@ -303,6 +303,8 @@
                     <div style="display: flex; gap: 12px; margin-top: 18px;">
                         <button class="btn-outline-green" id="btnDownloadApoReport">📄 Download Hardware Matrix Report (.txt)</button>
                         <button class="btn-outline-green" id="btnExportPs1Script">🛠️ Install / Repair System-Wide APO</button>
+                        <button class="btn-outline-green" id="btnRestartAudio">🔄 Restart Windows Audio</button>
+                        <button class="btn-outline-green" id="btnVerifySystemAudio">🔍 Verify System Audio (config + watermark)</button>
                     </div>
                 </div>
 
@@ -989,8 +991,8 @@
         document.getElementById('btnLockApoConfig').addEventListener('click', async () => {
             try {
                 const msg = await invokeCmd('enforce_global_hardware_apo');
-                document.getElementById('lblApoScriptStatus').innerText = "● Locked and applied system-wide";
-                document.getElementById('lblApoScriptStatus').style.color = "var(--primary-green)";
+                document.getElementById('lblApoScriptStatus').innerText = "● Locked; checking that Windows audio applies it...";
+                document.getElementById('lblApoScriptStatus').style.color = "var(--purple-text)";
                 alert(msg);
             } catch (err) {
                 alert("Lock Config failed: " + err + (String(err).toLowerCase().includes('access') ? "\n\nRun Diviora as Administrator (right-click → Run as administrator) to lock a configuration." : ""));
@@ -1042,9 +1044,32 @@
         // File APO Loader
         document.getElementById('btnTriggerApoUpload').addEventListener('click', () => document.getElementById('apoFileHiddenLoader').click());
         document.getElementById('apoFileHiddenLoader').addEventListener('change', async (e) => {
-            const file = e.target.files[0]; if (!file) return;
-            activeApoProfilePayload = await file.text();
-            activeApoFileName = file.name;
+            // The main configuration plus any files it uses (Include: .txt, Convolution: .wav),
+            // which are embedded so the locked configuration is self-contained.
+            const files = Array.from(e.target.files); if (!files.length) return;
+            const texts = files.filter(f => !/\.wav$/i.test(f.name));
+            if (!texts.length) { alert("Select the configuration .txt file (and optionally its Include/.wav files)."); e.target.value = ""; return; }
+            const contents = {};
+            for (const f of texts) contents[f.name] = await f.text();
+            // Main file: the text file that no other selected file includes.
+            const isIncluded = (name) => texts.some(o => o.name !== name &&
+                new RegExp('^\\s*Include\\s*:.*' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'im').test(contents[o.name]));
+            const main = texts.find(f => !isIncluded(f.name)) || texts[0];
+            const toB64 = (buf) => {
+                const b = new Uint8Array(buf); let s = '';
+                for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+                return btoa(s);
+            };
+            let payload = contents[main.name];
+            let total = 0;
+            for (const f of files) {
+                if (f === main) continue;
+                total += f.size;
+                if (total > 30 * 1024 * 1024) { alert("The extra files are too large (over 30 MB)."); e.target.value = ""; return; }
+                payload += `\nDivioraFile: ${f.name.replace(/\|/g, '_')} | ${toB64(await f.arrayBuffer())}`;
+            }
+            activeApoProfilePayload = payload;
+            activeApoFileName = main.name + (files.length > 1 ? ` + ${files.length - 1} file(s)` : "");
             let msg;
             try { msg = await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: true }); }
             catch (err) { alert("Upload failed: " + err); e.target.value = ""; return; }
@@ -1082,6 +1107,23 @@
                 const dllStatus = await invokeCmd('perform_real_dll_apo_audit');
                 document.getElementById('boxDllTelemetry').innerText = `• AUDIODG HOOK STATUS: ${dllStatus.status} | PID: ${dllStatus.audiodg_pid} | ${dllStatus.channel_status}`;
                 document.getElementById('boxDllTelemetry').style.color = dllStatus.status === 'ACTIVE' ? "var(--primary-green)" : (isEnabled ? "var(--purple-text)" : "var(--text-muted)");
+                // Lock status from what Windows audio is actually running, not from the button press.
+                if (dllStatus.has_active_config) {
+                    const l = document.getElementById('lblApoScriptStatus');
+                    if (dllStatus.status === 'ACTIVE') {
+                        l.innerText = `● Locked configuration is processing all system audio (${dllStatus.filtered_frames.toLocaleString()} frames)`;
+                        l.style.color = "var(--primary-green)";
+                    } else if (dllStatus.status === 'PASSTHROUGH_ACTIVE') {
+                        l.innerText = "● Locked, engine running but passing audio through: " + (dllStatus.last_error || "no configuration loaded");
+                        l.style.color = "var(--purple-text)";
+                    } else if (dllStatus.status === 'LOADED_IDLE') {
+                        l.innerText = "● Locked; engine loaded, play some audio";
+                        l.style.color = "var(--purple-text)";
+                    } else {
+                        l.innerText = "● Locked, but the system-wide engine is not running yet (see the status below)";
+                        l.style.color = "var(--purple-text)";
+                    }
+                }
             } catch (e) {}
         }, 1000);
 
@@ -1114,6 +1156,28 @@
                 const path = await invokeCmd('generate_apo_verification_report', { configData: "" });
                 alert("Report saved:\n" + path);
             } catch (err) { alert("Report failed: " + err); }
+        });
+
+        document.getElementById('btnVerifySystemAudio').addEventListener('click', async (e) => {
+            if (!confirm("Start playing music (e.g. YouTube) on the default speakers, then press OK.\nDiviora records what the speakers play for 8–45 seconds (depending on the watermark interval) and checks the configuration and the watermark.")) return;
+            const btn = e.currentTarget;
+            const label = btn.innerText;
+            btn.disabled = true;
+            btn.innerText = "⏺ Recording the speakers' output…";
+            try {
+                const r = await invokeCmd('verify_system_audio');
+                alert(r.summary);
+            } catch (err) {
+                alert("Check failed: " + err);
+            } finally {
+                btn.disabled = false;
+                btn.innerText = label;
+            }
+        });
+
+        document.getElementById('btnRestartAudio').addEventListener('click', async () => {
+            try { alert(await invokeCmd('restart_windows_audio')); }
+            catch (err) { alert("Could not restart Windows audio: " + err); }
         });
 
         document.getElementById('btnExportPs1Script').addEventListener('click', async () => {

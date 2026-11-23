@@ -8,17 +8,19 @@ pub struct ProcessedSource<S: Source<Item = f32>> {
     inner: S,
     engine: diviora_dsp::Engine,
     channels: usize,
-    frame: [f32; 8],
+    frame: [f32; diviora_dsp::eqapo::MAX_CHANNELS],
     pos: usize, // next sample of `frame` to hand out
     len: usize, // valid samples in `frame`
 }
 
 impl<S: Source<Item = f32>> ProcessedSource<S> {
     pub fn new(inner: S, config_text: &str) -> Self {
-        let channels = (inner.channels() as usize).clamp(1, 8);
-        let cfg = diviora_dsp::eqapo::parse(config_text, None);
+        let channels = (inner.channels() as usize).clamp(1, diviora_dsp::eqapo::MAX_CHANNELS);
+        // If:/Eval: are evaluated for this file's real sample rate and channel count.
+        let ctx = diviora_dsp::Context { sample_rate: inner.sample_rate(), channels, ..Default::default() };
+        let cfg = diviora_dsp::parse_with(config_text, None, &ctx);
         let engine = diviora_dsp::Engine::compile(&cfg.stages_for_all_devices(), inner.sample_rate(), channels, 0);
-        ProcessedSource { inner, engine, channels, frame: [0.0; 8], pos: 0, len: 0 }
+        ProcessedSource { inner, engine, channels, frame: [0.0; diviora_dsp::eqapo::MAX_CHANNELS], pos: 0, len: 0 }
     }
 }
 

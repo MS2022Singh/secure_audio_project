@@ -9,6 +9,8 @@ description = "Equalizer APO config parser, biquad DSP engine and CamillaDSP exp
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
+realfft = "3"
+regex-lite = "0.1"
 
 [profile.release]
 # Never abort inside audiodg.exe: panics are caught at the FFI boundary.

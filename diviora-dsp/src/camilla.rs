@@ -93,6 +93,8 @@ pub fn emit(stages: &[Stage], opt: &CamillaOptions, header_comment: &str) -> Str
                     FilterKind::BandPass => "Bandpass",
                     FilterKind::Notch => "Notch",
                     FilterKind::AllPass => "Allpass",
+                    FilterKind::LowShelf1 => "LowshelfFO",
+                    FilterKind::HighShelf1 => "HighshelfFO",
                 };
                 let _ = writeln!(filters, "  {}:\n    type: Biquad\n    parameters:\n      type: {}\n      freq: {}", name, ty, num(spec.freq));
                 if matches!(spec.kind, FilterKind::Peaking | FilterKind::LowShelf | FilterKind::HighShelf) {
@@ -133,6 +135,17 @@ pub fn emit(stages: &[Stage], opt: &CamillaOptions, header_comment: &str) -> Str
                 steps.push(Step::Mixer(name));
             }
             Stage::Watermark(_) => {} // Diviora-only; not part of a CamillaDSP export
+            Stage::Iir { b, a, channels } if b.len() <= 3 && a.len() <= 3 => {
+                let name = format!("iir_{}", idx);
+                let g = |v: &Vec<f64>, i: usize| v.get(i).copied().unwrap_or(0.0);
+                let _ = writeln!(filters, "  {}:\n    type: Biquad\n    parameters:\n      type: Free\n      a1: {}\n      a2: {}\n      b0: {}\n      b1: {}\n      b2: {}",
+                    name, num(g(a, 1)), num(g(a, 2)), num(g(b, 0)), num(g(b, 1)), num(g(b, 2)));
+                let chans = channels.indices(n);
+                if !chans.is_empty() { push_filter(&mut steps, chans, name); }
+            }
+            Stage::Iir { .. } | Stage::GraphicEq { .. } | Stage::Convolution { .. } => {
+                let _ = writeln!(filters, "  # stage {}: higher-order IIR / GraphicEQ / Convolution runs in the Diviora engine only (not exported)", idx);
+            }
         }
     }
 

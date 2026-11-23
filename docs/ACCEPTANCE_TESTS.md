@@ -16,7 +16,7 @@ Test builds aren't code-signed: on Windows click **More info → Run anyway** if
 
 | # | Requirement | Steps | Expected |
 |---|---|---|---|
-| A1 | One installer, no extra apps | Run `Diviora-Setup-windows-x64.exe` and accept the administrator prompt | It shows the licence page, installs without asking for VB-Cable or anything else, and asks to restart at the end. If it reports a problem, send `C:\ProgramData\Diviora\install.log` |
+| A1 | One installer, no extra apps, no reboot | Run `Diviora-Setup-windows-x64.exe` and accept the administrator prompt | It shows the licence page and installs without asking for VB-Cable or anything else. Sound stops for a few seconds (Windows audio restarts); no reboot. If it reports a problem, send `C:\ProgramData\Diviora\install.log` |
 | A2 | Native audio unharmed | After the restart, play YouTube in Chrome | Sound is normal (no config yet, so pass-through) |
 | A3 | Diviora is inside Windows audio | Administrator PowerShell: `powershell -ExecutionPolicy Bypass -File "C:\Program Files\Diviora Psychoacoustics\apo\install_native_apo.ps1" -Diagnose` while YouTube plays | `[4]` lists `DivioraAPO.dll`; `[5]` shows `"process":"AUDIODG.EXE"` and `process_calls` rising |
 | A4 | Config changes **all** system audio | Same folder: `... install_native_apo.ps1 -TestConfig "Preamp: -24 dB"` while YouTube plays | YouTube gets much quieter within about 1 s; Spotify or other apps too |
@@ -38,6 +38,9 @@ Test builds aren't code-signed: on Windows click **More info → Run anyway** if
 | B8 | Config not visible to users | As a normal (non-admin) Windows user, open `C:\ProgramData\Diviora\apo\` | "Access denied" |
 | B9 | Measured analysis | **Apply Matrix** after uploading | Peak gain, latency, init time and CPU show real values (e.g. peak gain equals your preamp + largest boost) |
 | B10 | Reports don't leak the config | **Download Hardware Matrix Report** and open it on the Desktop | Only a fingerprint (SHA-256), stage counts and APO status; no filter lines |
+
+| B11 | Full Equalizer APO syntax | Upload your real configuration (multi-select its Include .txt and Convolution .wav files too) | No "not supported" message, except for VST/LoudnessCorrection lines |
+| B12 | System-wide check | Lock the configuration, play music, **Verify System Audio** | "✔ Configuration: … processed this sound with the locked configuration" and, with a watermark set, "✔ Watermark … found in the speakers' output" |
 
 ## C. Watermark
 

@@ -205,6 +205,7 @@ fn find_installer_script() -> Option<PathBuf> {
     let mut candidates = vec![];
     if let Ok(e) = std::env::current_exe() {
         if let Some(d) = e.parent() {
+            candidates.push(d.join("apo").join("install_native_apo.ps1")); // installed app
             candidates.push(d.join("windows-installer").join("install_native_apo.ps1"));
             candidates.push(d.join("resources").join("windows-installer").join("install_native_apo.ps1"));
         }
@@ -463,17 +464,129 @@ pub fn export_processed_audio_file(source_path: String, _manager: State<'_, Arc<
 #[tauri::command]
 pub fn export_cpp_apo_bootstrap_script() -> Result<String, String> {
     require_developer()?;
+    let script = run_install_script_elevated(&[])?;
+    Ok(format!("Installer started (approve the administrator prompt): {}", script))
+}
+
+/// Run install_native_apo.ps1 with an administrator prompt, in a window that stays open.
+fn run_install_script_elevated(args: &[&str]) -> Result<String, String> {
     let script = find_installer_script()
         .ok_or_else(|| "install_native_apo.ps1 not found next to the app or in the project folder.".to_string())?;
-    let arg = format!(
-        "Start-Process powershell -Verb RunAs -ArgumentList '-NoExit','-ExecutionPolicy','Bypass','-File','\"{}\"'",
-        script.display()
-    );
+    let mut list = vec!["'-NoExit'".to_string(), "'-ExecutionPolicy'".into(), "'Bypass'".into(), "'-File'".into(),
+        format!("'\"{}\"'", script.display())];
+    list.extend(args.iter().map(|a| format!("'{}'", a)));
+    let arg = format!("Start-Process powershell -Verb RunAs -ArgumentList {}", list.join(","));
     std::process::Command::new("powershell")
         .args(["-NoProfile", "-Command", &arg])
         .spawn()
-        .map_err(|e| format!("Could not start the installer: {}", e))?;
-    Ok(format!("Installer started (approve the administrator prompt): {}", script.display()))
+        .map_err(|e| format!("Could not start PowerShell: {}", e))?;
+    Ok(script.display().to_string())
+}
+
+/// Record what the speakers play (Windows loopback) for `seconds`.
+#[cfg(windows)]
+fn capture_system_output(seconds: f64) -> Result<(Vec<f32>, u32, usize, String), String> {
+    use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    let host = rodio::cpal::default_host();
+    let dev = host.default_output_device().ok_or("No output device")?;
+    let name = dev.name().unwrap_or_default();
+    let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
+    let (sr, ch) = (cfg.sample_rate().0, cfg.channels() as usize);
+    let buf = Arc::new(Mutex::new(Vec::<f32>::with_capacity((seconds * sr as f64) as usize * ch)));
+    let err = |e| eprintln!("[verify] capture error: {}", e);
+    // An input stream on an OUTPUT device records what it plays (WASAPI loopback).
+    let stream = match cfg.sample_format() {
+        rodio::cpal::SampleFormat::F32 => {
+            let b = buf.clone();
+            dev.build_input_stream(&cfg.config(), move |d: &[f32], _: &_| b.lock().unwrap().extend_from_slice(d), err, None)
+        }
+        rodio::cpal::SampleFormat::I16 => {
+            let b = buf.clone();
+            dev.build_input_stream(&cfg.config(), move |d: &[i16], _: &_| b.lock().unwrap().extend(d.iter().map(|v| *v as f32 / 32768.0)), err, None)
+        }
+        f => return Err(format!("Unsupported output format {:?}", f)),
+    }.map_err(|e| format!("Could not record the speakers' output: {}", e))?;
+    stream.play().map_err(|e| e.to_string())?;
+    std::thread::sleep(std::time::Duration::from_secs_f64(seconds));
+    drop(stream);
+    let samples = std::mem::take(&mut *buf.lock().unwrap());
+    Ok((samples, sr, ch, name))
+}
+
+/// End-to-end check of system-wide processing: records what the speakers play while the
+/// developer plays music, and reports whether the Diviora engine processed it with the
+/// locked configuration and whether the watermark is in the sound.
+#[tauri::command]
+pub async fn verify_system_audio() -> Result<serde_json::Value, String> {
+    require_developer()?;
+    #[cfg(not(windows))]
+    {
+        Err("The system-wide check is for Windows. On phones, use Download Processed Audio and the watermark report.".to_string())
+    }
+    #[cfg(windows)]
+    {
+        let payload = effective_config().unwrap_or_default();
+        let wm = diviora_dsp::eqapo::parse(&payload, None).stages.into_iter().find_map(|(_, s)| match s {
+            diviora_dsp::eqapo::Stage::Watermark(w) => Some(w),
+            _ => None,
+        });
+        let seconds = match &wm {
+            Some(w) if w.interval_s > 0.0 => (w.interval_s + 3.0).clamp(6.0, 45.0),
+            _ => 8.0,
+        };
+        let status_num = |v: &Option<serde_json::Value>, k: &str| v.as_ref().and_then(|s| s.get(k)).and_then(|x| x.as_i64()).unwrap_or(0);
+        let before = crate::apo_config::read_status();
+        let (samples, sr, ch, device) = tauri::async_runtime::spawn_blocking(move || capture_system_output(seconds))
+            .await.map_err(|e| e.to_string())??;
+        let after = crate::apo_config::read_status();
+        let active = system_apo_active();
+        let frames_during = status_num(&after, "filtered_frames") - status_num(&before, "filtered_frames");
+        let config_loaded = after.as_ref().and_then(|s| s.get("config_loaded")).and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let ch = ch.max(1);
+        let mono: Vec<f32> = samples.chunks(ch).map(|f| f.iter().sum::<f32>() / f.len() as f32).collect();
+        let rms = (mono.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / mono.len().max(1) as f64).sqrt();
+        let level_db = if rms > 1e-9 { 20.0 * rms.log10() } else { -120.0 };
+        let watermark = wm.as_ref().map(|w| {
+            let d = diviora_dsp::watermark::detect(&mono, sr, w.freq, &w.id);
+            serde_json::json!({ "expected_id": w.id, "carrier_hz": w.freq, "detected": d.found, "score": d.score, "at_seconds": d.at_seconds })
+        });
+
+        let mut lines = vec![format!("Recorded {:.0} s from \"{}\" ({} Hz, {} ch). Level: {:.1} dBFS.", seconds, device, sr, ch, level_db)];
+        if level_db < -70.0 {
+            lines.push("✖ Nothing was playing: start music (e.g. YouTube) and run the check again.".into());
+        }
+        lines.push(if active && frames_during > 0 && config_loaded {
+            format!("✔ Configuration: the Diviora engine in Windows audio processed this sound with the locked configuration ({} frames during the test).", frames_during)
+        } else if active && config_loaded {
+            "✖ Configuration: the engine is loaded with the locked configuration, but no audio passed through it during the test (is the music playing on the default speakers?).".into()
+        } else if active {
+            "✖ Configuration: the engine is running in pass-through (no locked configuration loaded). Lock a configuration first.".into()
+        } else {
+            "✖ Configuration: the system-wide engine is not running in Windows audio (see the status line; try Restart Windows Audio).".into()
+        });
+        lines.push(match &watermark {
+            Some(w) if w["detected"].as_bool() == Some(true) =>
+                format!("✔ Watermark \"{}\" at {} Hz found in the speakers' output (score {:.2}).", w["expected_id"].as_str().unwrap_or(""), w["carrier_hz"], w["score"].as_f64().unwrap_or(0.0)),
+            Some(w) => format!("✖ Watermark \"{}\" not found (score {:.2}). It is added only while music plays, inside its time window, in bursts every {:.0} s.",
+                w["expected_id"].as_str().unwrap_or(""), w["score"].as_f64().unwrap_or(0.0), wm.as_ref().map(|x| x.interval_s).unwrap_or(0.0)),
+            None => "– Watermark: none is configured in the locked configuration.".into(),
+        });
+        Ok(serde_json::json!({
+            "seconds": seconds, "device": device, "level_db": level_db, "engine_active": active,
+            "config_loaded": config_loaded, "frames_during_test": frames_during, "watermark": watermark,
+            "summary": lines.join("\n"),
+        }))
+    }
+}
+
+/// Restart Windows audio so it loads (or reloads) the Diviora engine: replaces a reboot.
+#[tauri::command]
+pub fn restart_windows_audio() -> Result<String, String> {
+    require_developer()?;
+    if !cfg!(windows) { return Err("Only needed on Windows.".into()); }
+    run_install_script_elevated(&["-RestartAudio"])?;
+    Ok("Restarting Windows audio (approve the administrator prompt). Sound stops for a few seconds; then play something and watch the status line.".into())
 }
 
 #[tauri::command]
@@ -600,6 +713,36 @@ pub fn generate_watermark_audit_report(manager: State<'_, Arc<Mutex<PlaybackMana
     Ok(desktop_path.to_string_lossy().to_string())
 }
 
+/// Is the Diviora CLSID in the effect list of the speakers the installer attached it to?
+fn apo_bound_to_speakers(clsid: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let manifest = std::path::Path::new(&std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into()))
+            .join("Diviora").join("registry_backups").join("native_apo_install.json");
+        let Some(guid) = fs::read_to_string(manifest).ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(t.trim_start_matches('\u{feff}')).ok())
+            .and_then(|v| v.get("EndpointGuid").and_then(|g| g.as_str()).map(|g| g.to_string())) else { return false };
+        let path = format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Render\\{}\\FxProperties", guid);
+        let Ok(key) = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE).open_subkey(path) else { return false };
+        let want = clsid.to_uppercase();
+        key.enum_values().filter_map(|v| v.ok()).any(|(_, val)| {
+            let text = match val.vtype {
+                winreg::enums::REG_SZ | winreg::enums::REG_MULTI_SZ | winreg::enums::REG_EXPAND_SZ => {
+                    let w: Vec<u16> = val.bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                    String::from_utf16_lossy(&w)
+                }
+                _ => String::new(),
+            };
+            text.to_uppercase().contains(&want)
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = clsid;
+        false
+    }
+}
+
 #[tauri::command]
 pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
     require_developer()?;
@@ -611,6 +754,7 @@ pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
     #[cfg(not(windows))]
     let is_com_registered = { let _ = clsid; false };
     let has_locked_config = crate::apo_config::config_path().exists();
+    let bound = apo_bound_to_speakers(clsid);
 
     // Written once a second by DivioraAPO.dll itself, from inside audiodg.exe.
     let st = crate::apo_config::read_status();
@@ -637,8 +781,10 @@ pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
         "PASSTHROUGH_ACTIVE"
     } else if in_audiodg {
         "LOADED_IDLE"
-    } else if is_com_registered {
+    } else if is_com_registered && bound {
         "BOUND_READY"
+    } else if is_com_registered {
+        "REGISTERED_NOT_BOUND"
     } else {
         "UNLINKED"
     };
@@ -647,8 +793,9 @@ pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
         "ACTIVE" => format!("DivioraAPO in audiodg.exe | Locked config applied | Filtered frames: {}", filtered_frames),
         "PASSTHROUGH_ACTIVE" => format!("DivioraAPO in audiodg.exe | Pass-through ({}) | Frames: {}", last_error, processed_frames),
         "LOADED_IDLE" => "DivioraAPO loaded in audiodg.exe | Waiting for audio".to_string(),
-        "BOUND_READY" => "APO registered, not yet loaded by Windows audio (reboot after install, then play audio)".to_string(),
-        _ => "APO not installed".to_string(),
+        "BOUND_READY" => "Attached to the speakers, but Windows audio has not loaded it yet: click 'Restart Windows Audio', then play audio".to_string(),
+        "REGISTERED_NOT_BOUND" => "Engine registered but NOT attached to the speakers (installation did not finish): click 'Install / Repair System-Wide APO'; details in C:\\ProgramData\\Diviora\\install.log".to_string(),
+        _ => "System-wide engine not installed: click 'Install / Repair System-Wide APO'".to_string(),
     };
     let is_enabled = hook_status == "ACTIVE";
 
@@ -660,6 +807,7 @@ pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
         "is_enabled": is_enabled,
         "sync_enabled": is_enabled,
         "apo_registered": is_com_registered,
+        "apo_bound": bound,
         "pid": pid_str,
         "audiodg_pid": pid_str,
         "message": msg_str,

@@ -7,14 +7,14 @@ fn sample_config_converts_end_to_end() {
     let resolver = |n: &str| std::fs::read_to_string(format!("{}{}", dir, n)).ok();
     let cfg = eqapo::parse(&text, Some(&resolver));
 
-    // preamp, 4 active filters, included shelf, delay, copy, device preamp
-    assert_eq!(cfg.stages.len(), 9, "{:#?}", cfg.stages);
-    assert_eq!(cfg.warnings.len(), 1, "only GraphicEQ should be unconverted: {:?}", cfg.warnings);
+    // preamp, 4 active filters, included shelf, delay, copy, device preamp, GraphicEQ
+    assert_eq!(cfg.stages.len(), 10, "{:#?}", cfg.stages);
+    assert!(cfg.warnings.is_empty(), "everything should convert: {:?}", cfg.warnings);
 
     let profiles = camilla::emit_profiles(&cfg, &camilla::CamillaOptions::default());
     assert_eq!(profiles.iter().map(|p| p.0.as_str()).collect::<Vec<_>>(), vec!["default", "Headphones"]);
-    assert!(profiles[0].1.contains("type: Lowshelf") && profiles[0].1.contains("slope: 12.0"));
-    assert!(profiles[0].1.contains("# Not converted:"));
+    assert!(profiles[0].1.contains("type: Lowshelf"));
+    assert!(profiles[0].1.contains("GraphicEQ / Convolution runs in the Diviora engine only"));
 
     // The engine runs the same stages without NaNs or blow-ups.
     let mut e = Engine::compile(&cfg.stages_for_device("Speakers (Realtek(R) Audio)"), 48000, 2, 1);

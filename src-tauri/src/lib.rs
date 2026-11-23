@@ -101,7 +101,9 @@ pub fn run() {
             commands::pause_playback,
             commands::set_playback_volume,
             commands::check_for_update,
-            commands::open_update_download
+            commands::open_update_download,
+            commands::restart_windows_audio,
+            commands::verify_system_audio
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
