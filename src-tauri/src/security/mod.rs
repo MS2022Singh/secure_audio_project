@@ -185,6 +185,26 @@ impl SecurityManager {
         Ok(ok)
     }
 
+    /// Developer password change (developer panel): returns the new built-in access file
+    /// (salted hashes only, never the password) and a new recovery key. The file must be
+    /// built into the next app version to take effect on every device.
+    pub fn make_access_file(new_pass: &str) -> Result<(String, String), String> {
+        validate_new_password(new_pass)?;
+        let salt = random_bytes::<16>();
+        let recovery = new_recovery_key();
+        let recovery_salt = random_bytes::<16>();
+        let record = StoredSecret {
+            version: 2,
+            rounds: PBKDF2_ROUNDS,
+            salt: hex(&salt),
+            password_hash: hex(&derive(new_pass, &salt, PBKDF2_ROUNDS)),
+            recovery_salt: hex(&recovery_salt),
+            recovery_hash: hex(&derive(&recovery, &recovery_salt, PBKDF2_ROUNDS)),
+        };
+        let json = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())? + "\n";
+        Ok((json, recovery))
+    }
+
     /// Set the first password (old_pass empty), or change it with the current password
     /// or the recovery key. Returns a message that includes a NEW recovery key.
     pub fn reset_master_pass(old_pass: &str, new_pass: &str) -> Result<String, String> {

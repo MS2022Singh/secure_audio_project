@@ -14,16 +14,36 @@ use tauri::Manager;
 #[cfg(desktop)]
 async fn auto_update(app: tauri::AppHandle) {
     use tauri_plugin_updater::UpdaterExt;
-    let Ok(updater) = app.updater() else { return };
+    let set = |m: String| { if let Ok(mut s) = UPDATE_STATUS.lock() { *s = m; } };
+    set("checking for updates…".into());
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => { set(format!("updates not configured in this build ({})", e)); return; }
+    };
     match updater.check().await {
         Ok(Some(update)) => {
-            eprintln!("[update] installing version {}", update.version);
-            if update.download_and_install(|_, _| {}, || {}).await.is_ok() {
-                app.restart();
+            set(format!("installing version {}…", update.version));
+            match update.download_and_install(|_, _| {}, || {}).await {
+                Ok(()) => app.restart(),
+                Err(e) => set(format!("update to {} failed: {}", update.version, e)),
             }
         }
-        Ok(None) => {}
-        Err(e) => eprintln!("[update] check skipped: {}", e),
+        Ok(None) => set(format!("up to date (checked {})", chrono::Local::now().format("%H:%M"))),
+        Err(e) => set(format!("update check failed: {}", e)),
+    }
+}
+
+#[tauri::command]
+async fn check_updates_now(app: tauri::AppHandle) -> String {
+    #[cfg(desktop)]
+    {
+        auto_update(app).await;
+        UPDATE_STATUS.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        "phone: see the update banner".to_string()
     }
 }
 
@@ -103,7 +123,11 @@ pub fn run() {
             commands::check_for_update,
             commands::open_update_download,
             commands::restart_windows_audio,
-            commands::verify_system_audio
+            commands::verify_system_audio,
+            commands::import_track_b64,
+            commands::change_developer_password,
+            commands::app_version_info,
+            check_updates_now
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -114,3 +138,6 @@ pub fn run() {
 async fn tokio_sleep(secs: u64) {
     let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(std::time::Duration::from_secs(secs))).await;
 }
+
+/// Result of the last update check, shown in the app (Licence section).
+pub static UPDATE_STATUS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());

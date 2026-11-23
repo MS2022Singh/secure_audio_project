@@ -317,6 +317,34 @@ pub fn open_update_download(app: AppHandle, url: String) -> Result<(), String> {
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// Developer: create the file for a new developer password. It contains only salted hashes,
+/// so it is safe to send or commit; the next published version uses it on every device.
+#[tauri::command]
+pub fn change_developer_password(new_password: String, repeat: String) -> Result<serde_json::Value, String> {
+    require_developer()?;
+    if new_password != repeat {
+        return Err("The two new passwords are different.".into());
+    }
+    let (json, recovery) = SecurityManager::make_access_file(new_password.trim())?;
+    let path = desktop_file("developer_access.json");
+    let saved = fs::write(&path, &json).is_ok();
+    Ok(serde_json::json!({
+        "file": if saved { path.display().to_string() } else { String::new() },
+        "content": json,
+        "recovery_key": recovery,
+    }))
+}
+
+/// App version and the result of the last automatic update check (desktop).
+#[tauri::command]
+pub fn app_version_info(app: AppHandle) -> serde_json::Value {
+    serde_json::json!({
+        "version": app.package_info().version.to_string(),
+        "update_status": crate::UPDATE_STATUS.lock().map(|s| s.clone()).unwrap_or_default(),
+        "mobile": cfg!(any(target_os = "android", target_os = "ios")),
+    })
+}
+
 /// Pause (true) or resume (false) the current track at its position.
 #[tauri::command]
 pub fn pause_playback(paused: bool, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<bool, String> {
@@ -1008,10 +1036,23 @@ pub fn import_track(request: tauri::ipc::Request<'_>) -> Result<crate::library::
     };
     let name = request.headers().get("x-file-name").and_then(|v| v.to_str().ok())
         .map(|v| percent_decode(v)).unwrap_or_else(|| "track".into());
+    import_bytes(&name, bytes)
+}
+
+/// Same as import_track, with the file as base64 text. Android's IPC cannot carry raw
+/// binary bodies, so the phone app uses this.
+#[tauri::command]
+pub fn import_track_b64(name: String, data: String) -> Result<crate::library::Track, String> {
+    require_access()?;
+    let bytes = diviora_dsp::watermark::base64_decode(&data).ok_or("The file could not be transferred (bad encoding).")?;
+    import_bytes(&name, &bytes)
+}
+
+fn import_bytes(name: &str, bytes: &[u8]) -> Result<crate::library::Track, String> {
     // Must be playable audio.
-    rodio::Decoder::new(std::io::Cursor::new(bytes.clone()))
+    rodio::Decoder::new(std::io::Cursor::new(bytes.to_vec()))
         .map_err(|_| format!("{}: not a supported audio file (WAV, MP3, FLAC, OGG).", name))?;
-    crate::library::add_bytes(&name, bytes, false)
+    crate::library::add_bytes(name, bytes, false)
 }
 
 fn percent_decode(s: &str) -> String {

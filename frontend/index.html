@@ -152,8 +152,10 @@
                 <details class="card licence-card" id="boxLicenceDetails">
                     <summary><span>🔑 Licence</span><span class="licence-state" id="lblLicenceBadge">Active</span></summary>
                     <div class="licence-line" id="lblLicenceSummary" style="margin-top: 12px;">Checking licence…</div>
-                    <div style="display: flex; gap: 10px; margin-top: 14px;">
+                    <div class="licence-line" id="lblAppVersion" style="margin-top: 10px;"></div>
+                    <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap;">
                         <button id="btnConsumerResetPassword" class="btn-dark">Reset Client Token</button>
+                        <button id="btnCheckUpdates" class="btn-dark">Check for updates</button>
                     </div>
                 </details>
             </div>
@@ -382,6 +384,15 @@
                         <button class="btn-green" id="btnGenerateInviteToken">Generate Free Key Token</button>
                     </div>
                     <input type="text" id="txtGeneratedTokenDisplay" readonly placeholder="Generated Whitelisted Key Token Will Appear Here" />
+                </div>
+
+                <div class="card">
+                    <h3 style="margin: 0 0 12px 0;">🔐 Developer Password</h3>
+                    <p style="font-size: 12.5px; color: var(--text-muted); margin: 0 0 12px 0; line-height: 1.5;">The developer password is built into the app so users cannot create their own. Choose a new one here: Diviora creates <b>developer_access.json</b> (it holds only scrambled hashes, never the password) and a new recovery key. Send that file to be built in; from the next version on, only the new password opens this panel on every device.</p>
+                    <input type="password" id="txtNewDevPass" placeholder="New developer password (12+ characters, mixed)" style="margin-bottom: 10px;" />
+                    <input type="password" id="txtNewDevPass2" placeholder="Repeat the new password" style="margin-bottom: 12px;" />
+                    <button class="btn-green" id="btnMakeDevPass">Create new password file</button>
+                    <textarea id="txtDevAccessFile" readonly style="display:none; width: 100%; box-sizing: border-box; margin-top: 12px; height: 140px; background: #0c0d14; color: var(--primary-green); border: 1px solid var(--border-color); border-radius: 6px; font-family: monospace; font-size: 11.5px; padding: 10px;"></textarea>
                 </div>
 
                 <div class="card">
@@ -758,6 +769,12 @@
             const core = (window.__TAURI__ && window.__TAURI__.core) || window.__TAURI_INTERNALS__;
             return await core.invoke(command, bytes, { headers });
         }
+        function bytesToB64(buf) {
+            const b = new Uint8Array(buf); let s = '';
+            for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+            return btoa(s);
+        }
+
         async function loadLibraryIntoPlaylist() {
             try {
                 const tracks = await invokeCmd('list_library');
@@ -773,8 +790,19 @@
             const firstNew = playlistQueue.length;
             for (const f of files) {
                 try {
-                    const bytes = new Uint8Array(await f.arrayBuffer());
-                    const t = await invokeRaw('import_track', bytes, { 'x-file-name': encodeURIComponent(f.name) });
+                    const buf = await f.arrayBuffer();
+                    let t;
+                    if (document.body.classList.contains('mobile')) {
+                        // Android's IPC cannot carry raw binary bodies: send base64 text.
+                        t = await invokeCmd('import_track_b64', { name: f.name, data: bytesToB64(buf) });
+                    } else {
+                        try {
+                            t = await invokeRaw('import_track', new Uint8Array(buf), { 'x-file-name': encodeURIComponent(f.name) });
+                        } catch (rawErr) {
+                            if (!String(rawErr).includes('raw bytes')) throw rawErr;
+                            t = await invokeCmd('import_track_b64', { name: f.name, data: bytesToB64(buf) });
+                        }
+                    }
                     playlistQueue.push({ name: t.name, path: t.path, id: t.id });
                 } catch (err) {
                     alert("Could not add " + f.name + ": " + err);
@@ -910,6 +938,7 @@
             if (!isPlayingState) return;
             let st;
             try { st = await invokeCmd('check_playback_queue_status'); } catch (e) { return; }
+            if (!st) return;
             if (st.state === 'failed') {
                 isPlayingState = false; isPausedState = false; setPlayButton();
                 setPlayerLabel("✖ " + st.error, 'var(--error-red)');
@@ -951,6 +980,48 @@
                 await invokeCmd('clear_watermark_signature');
                 document.getElementById('lblWmSignatureStatus').innerText = "None: using the generated frequency signature";
             } catch (err) { alert("Could not clear watermark audio: " + err); }
+        });
+
+        // New developer password file.
+        document.getElementById('btnMakeDevPass').addEventListener('click', async () => {
+            try {
+                const r = await invokeCmd('change_developer_password', {
+                    newPassword: document.getElementById('txtNewDevPass').value,
+                    repeat: document.getElementById('txtNewDevPass2').value,
+                });
+                const box = document.getElementById('txtDevAccessFile');
+                box.value = r.content;
+                box.style.display = 'block';
+                document.getElementById('txtNewDevPass').value = '';
+                document.getElementById('txtNewDevPass2').value = '';
+                alert("New password file created" + (r.file ? ":\n" + r.file : " (shown below the button; copy it)") +
+                      "\n\nNEW RECOVERY KEY (write it down now, it is shown only once):\n" + r.recovery_key +
+                      "\n\nSend developer_access.json to be built into the next version. Until then the current password keeps working.");
+            } catch (err) { alert("Not created: " + err); }
+        });
+
+        // App version and update status.
+        async function refreshVersionInfo() {
+            try {
+                const v = await invokeCmd('app_version_info');
+                document.getElementById('lblAppVersion').innerText = "App version " + v.version +
+                    (v.mobile ? "" : " · Updates: " + (v.update_status || "not checked yet"));
+            } catch (e) {}
+        }
+        window.addEventListener('DOMContentLoaded', () => { refreshVersionInfo(); setInterval(refreshVersionInfo, 15000); });
+        document.getElementById('btnCheckUpdates').addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true; btn.innerText = "Checking…";
+            try {
+                if (document.body.classList.contains('mobile')) {
+                    await checkPhoneUpdate();
+                    if (!pendingUpdateUrl) alert("You have the latest version.");
+                } else {
+                    alert("Updates: " + await invokeCmd('check_updates_now'));
+                }
+            } catch (err) { alert("Update check failed: " + err); }
+            btn.disabled = false; btn.innerText = "Check for updates";
+            refreshVersionInfo();
         });
 
         // GitHub Sync

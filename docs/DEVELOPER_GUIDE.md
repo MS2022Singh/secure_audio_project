@@ -54,10 +54,11 @@ Open it with **Ctrl + Shift + D** (on a phone: tap the **DIVIORA** logo 7 times 
   on every device. Users cannot create or reset a developer password on their own device.
   The app contains only a salted PBKDF2-SHA256 hash of it (`src-tauri/developer_access.json`).
   The recovery key also unlocks the panel.
-  **To change the password:** on your PC run
-  `powershell -ExecutionPolicy Bypass -File tools\set-developer-password.ps1`, type the new password
-  twice, and note the new recovery key it prints. It creates `developer_access.json` on your
-  Desktop; it replaces `src-tauri/developer_access.json`, and the next published update uses it.
+  **To change the password:** unlock the developer panel, go to **Developer Password**, enter the
+  new password twice and press **Create new password file**. Write down the new recovery key it
+  shows. It saves `developer_access.json` on the Desktop (hashes only, safe to share); it replaces
+  `src-tauri/developer_access.json`, and the next published update makes the new password the only
+  one on every device. (Alternative without the app: `tools\set-developer-password.ps1`.)
 - **Server-side protection:** every developer action (upload/lock config, watermark settings,
   reports, invites, status) is refused by the app's core unless the panel was unlocked with the
   password in this session; hiding the buttons is not the protection. Five wrong passwords lock the
