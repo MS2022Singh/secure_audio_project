@@ -31,6 +31,11 @@ diviora-client = { path = "../diviora-client" }
 winreg = "0.52"
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# Hand the Android app context to the audio library (cpal/oboe), which needs it to open audio.
+jni = "0.21"
+ndk-context = "0.1"
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
 

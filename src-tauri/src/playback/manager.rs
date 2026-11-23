@@ -7,6 +7,10 @@ use std::thread;
 use std::time::Duration;
 use rodio::{Decoder, OutputStream, Sink, Source};
 
+/// Android: set once the app context has been handed to the audio library (see lib.rs).
+/// Other platforms need nothing.
+pub static AUDIO_CONTEXT_READY: AtomicBool = AtomicBool::new(!cfg!(target_os = "android"));
+
 /// Path value that plays the 440 Hz calibration tone instead of a file.
 pub const TEST_TONE: &str = "trigger_test_tone";
 
@@ -98,6 +102,11 @@ impl<S: Source<Item = f32>> Source for Metered<S> {
 
 /// Name of the default output device (what Windows/Android plays to right now).
 pub fn default_output_name() -> String {
+    // Android: device listing goes through Java (AudioManager) and is not safe to call from
+    // here; the phone routes audio itself (speaker, headphones or Bluetooth).
+    if cfg!(target_os = "android") {
+        return "phone audio output (speaker / headphones)".into();
+    }
     use rodio::cpal::traits::{DeviceTrait, HostTrait};
     rodio::cpal::default_host()
         .default_output_device()
@@ -107,6 +116,9 @@ pub fn default_output_name() -> String {
 
 /// All output devices, the default one marked.
 pub fn output_device_names() -> Vec<String> {
+    if cfg!(target_os = "android") {
+        return vec![format!("{} (Default)", default_output_name())];
+    }
     use rodio::cpal::traits::{DeviceTrait, HostTrait};
     let host = rodio::cpal::default_host();
     let default = default_output_name();
@@ -190,7 +202,15 @@ impl PlaybackManager {
         *self.mode.lock().unwrap() = mode.to_string();
         *self.status.lock().unwrap() = PlaybackStatus::Playing(path_str);
 
+        let status_panic = Arc::clone(&self.status);
+        let gen_panic = Arc::clone(&self.generation);
         thread::spawn(move || {
+          // A failure inside the audio library must become an error message, never a crash.
+          let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            for _ in 0..50 {
+                if AUDIO_CONTEXT_READY.load(Ordering::Acquire) { break; }
+                thread::sleep(Duration::from_millis(100));
+            }
             let fail = |e: String| {
                 if gen_ref.load(Ordering::Acquire) == new_gen {
                     *status_ref.lock().unwrap() = PlaybackStatus::Failed(e);
@@ -242,6 +262,17 @@ impl PlaybackManager {
             if gen_ref.load(Ordering::Acquire) == new_gen {
                 *status_ref.lock().unwrap() = if finished { PlaybackStatus::Finished } else { PlaybackStatus::Stopped };
             }
+          }));
+          if let Err(p) = r {
+              let msg = p.downcast_ref::<&str>().map(|s| s.to_string())
+                  .or_else(|| p.downcast_ref::<String>().cloned())
+                  .unwrap_or_else(|| "unknown error".into());
+              if gen_panic.load(Ordering::Acquire) == new_gen {
+                  if let Ok(mut st) = status_panic.lock() {
+                      *st = PlaybackStatus::Failed(format!("Audio output failed: {}", msg));
+                  }
+              }
+          }
         });
 
         Ok(())
