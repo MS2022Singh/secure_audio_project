@@ -399,6 +399,7 @@
                     <input type="password" id="txtNewDevPass" placeholder="New developer password (12+ characters, mixed)" style="margin-bottom: 10px;" />
                     <input type="password" id="txtNewDevPass2" placeholder="Repeat the new password" style="margin-bottom: 12px;" />
                     <button class="btn-green" id="btnMakeDevPass">Create new password file</button>
+                    <button class="btn-dark" id="btnCopyDevAccess" style="display:none; margin-top: 12px;">📋 Copy the file contents</button>
                     <textarea id="txtDevAccessFile" readonly style="display:none; width: 100%; box-sizing: border-box; margin-top: 12px; height: 140px; background: #0c0d14; color: var(--primary-green); border: 1px solid var(--border-color); border-radius: 6px; font-family: monospace; font-size: 11.5px; padding: 10px;"></textarea>
                 </div>
 
@@ -1022,12 +1023,19 @@
                 const box = document.getElementById('txtDevAccessFile');
                 box.value = r.content;
                 box.style.display = 'block';
+                document.getElementById('btnCopyDevAccess').style.display = 'inline-block';
                 document.getElementById('txtNewDevPass').value = '';
                 document.getElementById('txtNewDevPass2').value = '';
                 alert("New password file created" + (r.file ? ":\n" + r.file : " (shown below the button; copy it)") +
                       "\n\nNEW RECOVERY KEY (write it down now, it is shown only once):\n" + r.recovery_key +
                       "\n\nSend developer_access.json to be built into the next version. Until then the current password keeps working.");
             } catch (err) { alert("Not created: " + err); }
+        });
+
+        document.getElementById('btnCopyDevAccess').addEventListener('click', async () => {
+            const box = document.getElementById('txtDevAccessFile');
+            try { await navigator.clipboard.writeText(box.value); alert("Copied. Paste it to your build helper (it contains no password)."); }
+            catch (e) { box.focus(); box.select(); document.execCommand('copy'); alert("Copied (or select the text in the box and copy it)."); }
         });
 
         // App version and update status.
