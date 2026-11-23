@@ -23,6 +23,15 @@ fn require_access() -> Result<(), String> {
     }
 }
 
+/// Every developer-panel command checks this in the backend; hiding the panel is not enough.
+fn require_developer() -> Result<(), String> {
+    if DEVELOPER_UNLOCKED.load(std::sync::atomic::Ordering::Relaxed) {
+        Ok(())
+    } else {
+        Err("Developer access required.".into())
+    }
+}
+
 #[tauri::command]
 pub fn detect_audio_hardware_devices() -> Result<Vec<String>, String> {
     Ok(vec![
@@ -207,6 +216,7 @@ fn find_installer_script() -> Option<PathBuf> {
 
 #[tauri::command]
 pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+    require_developer()?;
     if profile_data == "REMOVE" || !is_enabled {
         if profile_data == "REMOVE" {
             *STAGED_PROFILE.lock().unwrap() = None;
@@ -235,6 +245,7 @@ pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: Stat
 /// Measured "Estimated properties" for the uploaded configuration.
 #[tauri::command]
 pub fn analyze_apo_profile(sample_rate: Option<u32>, channels: Option<u32>, device: Option<String>) -> Result<serde_json::Value, String> {
+    require_developer()?;
     let text = STAGED_PROFILE.lock().unwrap().clone().unwrap_or_default();
     let a = diviora_dsp::analysis::analyze(&text, sample_rate.unwrap_or(48000), channels.unwrap_or(2) as usize, device.as_deref());
     Ok(serde_json::json!({
@@ -335,6 +346,7 @@ pub fn reset_master_password(old_pass: String, new_pass: String) -> Result<Strin
 /// %LOCALAPPDATA%\\Diviora\\developer.json or DIVIORA_ADMIN_TOKEN).
 #[tauri::command]
 pub fn generate_invite_token(days_valid: u32) -> Result<String, String> {
+    require_developer()?;
     let dev = diviora_client::state::developer_credentials().ok_or_else(|| {
         "No licence server configured for the developer. See DEVELOPER_GUIDE.md, section \"Licence server\".".to_string()
     })?;
@@ -343,6 +355,7 @@ pub fn generate_invite_token(days_valid: u32) -> Result<String, String> {
 
 #[tauri::command]
 pub fn sync_project_to_github(commit_msg: String) -> Result<String, String> {
+    require_developer()?;
     let root = find_repo_root().ok_or_else(|| "Not running from a project checkout: Git sync is a developer-machine feature.".to_string())?;
     let run = |args: &[&str]| -> Result<String, String> {
         let o = std::process::Command::new("git").args(args).current_dir(&root).output()
@@ -388,6 +401,7 @@ pub fn export_processed_audio_file(source_path: String, _manager: State<'_, Arc<
 /// Install or repair the system-wide APO (asks for administrator rights).
 #[tauri::command]
 pub fn export_cpp_apo_bootstrap_script() -> Result<String, String> {
+    require_developer()?;
     let script = find_installer_script()
         .ok_or_else(|| "install_native_apo.ps1 not found next to the app or in the project folder.".to_string())?;
     let arg = format!(
@@ -403,6 +417,7 @@ pub fn export_cpp_apo_bootstrap_script() -> Result<String, String> {
 
 #[tauri::command]
 pub fn set_watermark_time_frame(start_sec: u32, end_sec: u32, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+    require_developer()?;
     {
         let mgr = manager.inner();
         let mutex_lock = mgr.lock().unwrap();
@@ -420,6 +435,7 @@ pub fn set_watermark_time_frame(start_sec: u32, end_sec: u32, manager: State<'_,
 /// Signature ID, carrier frequency, amplitude, burst interval and auto (signal-gated) mode.
 #[tauri::command]
 pub fn set_watermark_params(signature_id: String, carrier_hz: f64, amplitude: f64, interval_sec: f64, auto_mode: bool) -> Result<String, String> {
+    require_developer()?;
     let line = format!("Id {} Freq {} Amp {} Interval {} Auto {}", signature_id.trim(), carrier_hz, amplitude, interval_sec.max(0.0), auto_mode as u8);
     let parsed = diviora_dsp::watermark::parse_watermark_line(&line)?;
     {
@@ -441,6 +457,7 @@ pub fn set_watermark_params(signature_id: String, carrier_hz: f64, amplitude: f6
 
 #[tauri::command]
 pub fn clear_watermark_signature(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+    require_developer()?;
     {
         let mgr = manager.inner();
         let mutex_lock = mgr.lock().unwrap();
@@ -471,6 +488,7 @@ pub fn ingest_dropped_paths(paths: Vec<String>, manager: State<'_, Arc<Mutex<Pla
 /// Report of the active configuration and the APO status. Never contains the configuration itself.
 #[tauri::command]
 pub fn generate_apo_verification_report(config_data: String) -> Result<String, String> {
+    require_developer()?;
     let _ = config_data; // ignored on purpose: the report must not leak the configuration
     let payload = compose_apo_payload();
     let analysis = diviora_dsp::analysis::analyze(&payload, 48000, 2, None);
@@ -493,6 +511,7 @@ pub fn generate_apo_verification_report(config_data: String) -> Result<String, S
 
 #[tauri::command]
 pub fn generate_watermark_audit_report(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+    require_developer()?;
     let track = current_track(&manager);
     let detection = if track.is_empty() {
         "No track loaded: load a processed file in the player to check it for the watermark.".to_string()
@@ -522,6 +541,7 @@ pub fn generate_watermark_audit_report(manager: State<'_, Arc<Mutex<PlaybackMana
 
 #[tauri::command]
 pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
+    require_developer()?;
     let clsid = "{D1B100A1-8888-4444-9999-000000000001}";
     #[cfg(windows)]
     let is_com_registered = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
@@ -600,6 +620,7 @@ pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
 /// Detect the frequency-signature watermark in the currently loaded track.
 #[tauri::command]
 pub fn perform_real_watermark_fft_audit(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<serde_json::Value, String> {
+    require_developer()?;
     let path = current_track(&manager);
     if path.is_empty() {
         return Err("Load an audio file (for example a downloaded processed file) first.".into());
@@ -610,6 +631,7 @@ pub fn perform_real_watermark_fft_audit(manager: State<'_, Arc<Mutex<PlaybackMan
 /// Watermark detection on any audio file.
 #[tauri::command]
 pub fn verify_watermark_in_file(path: String) -> Result<serde_json::Value, String> {
+    require_developer()?;
     detect_watermark_in_file(&path)
 }
 
@@ -634,6 +656,7 @@ pub fn get_live_amplitude_metrics(manager: State<'_, Arc<Mutex<PlaybackManager>>
 
 #[tauri::command]
 pub fn enforce_global_hardware_apo(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+    require_developer()?;
     let payload = compose_apo_payload();
     if payload.trim().is_empty() {
         return Err("Upload a configuration file (or enable the watermark) first, then press Lock Config.".to_string());
@@ -699,6 +722,7 @@ pub fn authenticate_user_session(user_id: String, hwid: String) -> Result<String
 
 #[tauri::command]
 pub fn upload_signature(signature: Vec<u8>, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+    require_developer()?;
     use rodio::Source;
     let decoder = rodio::Decoder::new(std::io::Cursor::new(signature.clone()))
         .map_err(|_| "Not a supported audio file. Upload a WAV, MP3, FLAC or OGG clip.".to_string())?;
@@ -733,6 +757,7 @@ pub fn upload_signature(signature: Vec<u8>, manager: State<'_, Arc<Mutex<Playbac
 
 #[tauri::command]
 pub fn toggle_watermark(active: bool, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<bool, String> {
+    require_developer()?;
     {
         let mgr = manager.inner();
         let mutex_lock = mgr.lock().unwrap();
@@ -745,6 +770,7 @@ pub fn toggle_watermark(active: bool, manager: State<'_, Arc<Mutex<PlaybackManag
 
 #[tauri::command]
 pub fn verify_watermark_presence(manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<bool, String> {
+    require_developer()?;
     let path = current_track(&manager);
     if path.is_empty() { return Ok(false); }
     Ok(detect_watermark_in_file(&path)?.get("detected").and_then(|v| v.as_bool()).unwrap_or(false))

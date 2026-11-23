@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>DIVIORA PSYCHOACOUSTICS</title>
     <style>
         :root {
@@ -64,6 +64,9 @@
         .est-label { font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between; margin-bottom: 6px; }
         .est-value { color: #fff; font-weight: bold; font-family: monospace; }
 
+        /* Android draws the app under the status bar: keep the top bar (and the logo) below it. */
+        body.mobile .sidebar { padding-top: max(40px, env(safe-area-inset-top)); }
+        body.mobile .logo { padding: 6px 0; }
         .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.75); display: none; align-items: center; justify-content: center; z-index: 1000; }
         .licence-card summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 800; user-select: none; }
         .licence-card summary::-webkit-details-marker { display: none; }
@@ -485,6 +488,13 @@
             document.getElementById('menuDeveloper').className = p === 'developer' ? 'nav-item active' : 'nav-item';
         }
         window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const info = await invokeCmd('platform_info');
+                if (info && info.mobile) {
+                    document.body.classList.add('mobile');
+                    document.getElementById('dropZoneMedia').innerText = '📁 Tap here to add audio files';
+                }
+            } catch (e) {}
             await refreshLicenceState();
             switchPanelView(hasPlayerAccess() ? 'consumer' : 'activation');
         });

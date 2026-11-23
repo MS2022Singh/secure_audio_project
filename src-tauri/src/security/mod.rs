@@ -1,10 +1,12 @@
 ﻿//! Developer (master) password, recovery key, device ID and local licence cache.
 //!
-//! * No built-in or default passwords. The first password is set by the developer on
-//!   first use; a one-time recovery key is shown at that moment (store it offline).
-//! * Passwords and recovery keys are stored only as salted PBKDF2-HMAC-SHA256 hashes
-//!   (600 000 iterations) in %ProgramData%\Diviora\master_sec.json.
-//! * Five wrong attempts lock the login for 60 seconds.
+//! * The developer password is BUILT INTO the app as a salted PBKDF2-HMAC-SHA256 hash
+//!   (600 000 iterations) from `src-tauri/developer_access.json`. Only the developer knows the
+//!   password; a user cannot create or reset a developer password on their own device.
+//!   To change it: tools/set-developer-password.ps1, commit the new file, publish an update.
+//! * (A build without that file falls back to a per-device password; not used for releases.)
+//! * Five wrong attempts lock the login for 60 seconds, recorded on disk so restarting the
+//!   app does not reset the count.
 //! * Device ID = SHA-256 of the Windows MachineGuid (stable across user accounts and
 //!   reboots, changes on a Windows reinstall), not the computer/user name.
 
@@ -30,11 +32,30 @@ struct StoredSecret {
     recovery_hash: String,
 }
 
+/// The developer's password verifier, compiled into the app.
+const BUILT_IN_ACCESS: &str = include_str!("../../developer_access.json");
+
+fn built_in() -> Option<StoredSecret> {
+    let s: StoredSecret = serde_json::from_str(BUILT_IN_ACCESS).ok()?;
+    (!s.password_hash.is_empty() && !s.salt.is_empty()).then_some(s)
+}
+
 struct Attempts {
     failures: u32,
     locked_until: Option<Instant>,
 }
 static ATTEMPTS: Mutex<Attempts> = Mutex::new(Attempts { failures: 0, locked_until: None });
+
+/// Failed attempts survive an app restart (otherwise closing and reopening the app would
+/// give unlimited guesses).
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct LockFile {
+    failures: u32,
+    locked_until_unix: u64,
+}
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
@@ -102,8 +123,17 @@ impl SecurityManager {
         Self::get_sec_dir().join("master_sec.json")
     }
 
+    fn lock_file() -> PathBuf {
+        Self::get_sec_dir().join("dev_lock.json")
+    }
+
     fn load() -> Option<StoredSecret> {
-        serde_json::from_str(&fs::read_to_string(Self::secret_file()).ok()?).ok()
+        built_in().or_else(|| serde_json::from_str(&fs::read_to_string(Self::secret_file()).ok()?).ok())
+    }
+
+    /// True when the developer password is compiled into the app (release setup).
+    pub fn password_is_built_in() -> bool {
+        built_in().is_some()
     }
 
     pub fn is_password_set() -> bool {
@@ -117,6 +147,8 @@ impl SecurityManager {
 
     /// Ok(true) on success. Err while locked out or when no password has been set yet.
     pub fn verify_master_pass(pass: &str) -> Result<bool, String> {
+        let mut disk: LockFile = fs::read_to_string(Self::lock_file()).ok()
+            .and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         {
             let a = ATTEMPTS.lock().unwrap();
             if let Some(until) = a.locked_until {
@@ -124,6 +156,9 @@ impl SecurityManager {
                     return Err(format!("Too many attempts. Try again in {} s.", (until - Instant::now()).as_secs() + 1));
                 }
             }
+        }
+        if disk.locked_until_unix > unix_now() {
+            return Err(format!("Too many attempts. Try again in {} s.", disk.locked_until_unix - unix_now()));
         }
         let stored = Self::load().ok_or_else(|| {
             "No developer password is set yet. Click \"Reset Password\" and leave the current-password box empty to create one.".to_string()
@@ -133,12 +168,19 @@ impl SecurityManager {
         if ok {
             a.failures = 0;
             a.locked_until = None;
+            disk = LockFile::default();
         } else {
             a.failures += 1;
-            if a.failures >= MAX_FAILURES {
+            disk.failures += 1;
+            if a.failures >= MAX_FAILURES || disk.failures >= MAX_FAILURES {
                 a.failures = 0;
                 a.locked_until = Some(Instant::now() + LOCKOUT);
+                disk.failures = 0;
+                disk.locked_until_unix = unix_now() + LOCKOUT.as_secs();
             }
+        }
+        if let Ok(t) = serde_json::to_string(&disk) {
+            let _ = fs::write(Self::lock_file(), t);
         }
         Ok(ok)
     }
@@ -146,6 +188,10 @@ impl SecurityManager {
     /// Set the first password (old_pass empty), or change it with the current password
     /// or the recovery key. Returns a message that includes a NEW recovery key.
     pub fn reset_master_pass(old_pass: &str, new_pass: &str) -> Result<String, String> {
+        if Self::password_is_built_in() {
+            return Err("The developer password is built into the app, so it cannot be created or changed on this device. \
+                        The developer changes it with tools/set-developer-password.ps1 and publishes an update.".into());
+        }
         validate_new_password(new_pass)?;
         if let Some(stored) = Self::load() {
             let by_password = !old_pass.is_empty() && check(old_pass, &stored.salt, &stored.password_hash, stored.rounds);

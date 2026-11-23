@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "rounds": 600000,
+  "salt": "9109858f2e94ffb9d1b7db7c07bdbf58",
+  "password_hash": "bacd99a5dc9d247144ac302b88d9c8b8d1e5b711a40cbf7813c2d81325acf75b",
+  "recovery_salt": "affdacebb520bd5b8abb34c0360f9020",
+  "recovery_hash": "62a615337861f00c81805a4676fc21b08f8ab06cd1fac93fdf6f0408fb3a2981"
+}

@@ -50,9 +50,18 @@ the sync service build, the server tests and the app unit tests.
 
 Open it with **Ctrl + Shift + D** (on a phone: tap the **DIVIORA** logo 7 times quickly), then sign in with the developer password. Press the shortcut again to close it and lock the developer session. Once unlocked, the developer can also use the player without a consumer licence.
 
-- **First use:** click **Reset Password**, leave *Current password* empty, and choose a password
-  (at least 10 characters, three character types). A **recovery key** is shown **once**. Store it
-  offline; it's the only way to reset a forgotten password.
+- **Developer password (built into the app):** only the developer's password opens the panel,
+  on every device. Users cannot create or reset a developer password on their own device.
+  The app contains only a salted PBKDF2-SHA256 hash of it (`src-tauri/developer_access.json`).
+  The recovery key also unlocks the panel.
+  **To change the password:** on your PC run
+  `powershell -ExecutionPolicy Bypass -File tools\set-developer-password.ps1`, type the new password
+  twice, and note the new recovery key it prints. It creates `developer_access.json` on your
+  Desktop; it replaces `src-tauri/developer_access.json`, and the next published update uses it.
+- **Server-side protection:** every developer action (upload/lock config, watermark settings,
+  reports, invites, status) is refused by the app's core unless the panel was unlocked with the
+  password in this session; hiding the buttons is not the protection. Five wrong passwords lock the
+  login for 60 s, and the count survives restarting the app.
 - **Upload config:** Equalizer APO 1.4.x `.txt` (Preamp, Filter, Channel, Copy, Delay, Device,
   Include). Unsupported lines (`If`, `GraphicEQ`, `VST`, …) are listed, never silently dropped.
 - **Lock Config:** encrypts the config with DPAPI (machine-bound) and locks it so only Windows
@@ -153,7 +162,8 @@ Prices are approximate. Check the providers' current pricing before buying.
 
 ## 8. Security notes
 
-- No built-in passwords. Passwords and recovery keys are stored as salted PBKDF2-SHA256 hashes.
+- No default passwords. The developer password and recovery key are built in only as salted
+  PBKDF2-SHA256 hashes (600 000 rounds); change the password before the first public release.
 - `config.dvr` is DPAPI-encrypted per machine and ACL-locked. An administrator on a user's PC can
   still read Windows audio's memory; DPAPI and ACLs stop normal users and stop copying a config to
   another PC.

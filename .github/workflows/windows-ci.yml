@@ -31,6 +31,10 @@ jobs:
         working-directory: diviora-sync
         run: cargo build --release
 
+      - name: Developer password tool (same hashing as the app)
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File tools\set-developer-password.ps1 -SelfTest
+
       - name: Licence server tests
         working-directory: backend
         run: |

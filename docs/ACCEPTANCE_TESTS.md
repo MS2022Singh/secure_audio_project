@@ -30,10 +30,10 @@ Test builds aren't code-signed: on Windows click **More info → Run anyway** if
 |---|---|---|---|
 | B1 | Activation first, developer hidden | Open Diviora on a device that is not activated | Only **Activation** is shown; no player and no developer panel. After entering a key (test mode accepts any key while no licence server is configured) the **Consumer Deck** with the player and a **Licence** card opens |
 | B2 | Hidden shortcut | Press **Ctrl + Shift + D** (phone: tap the DIVIORA logo 7 times) | **Master Security** appears and asks for a password |
-| B3 | No default password | Try `admin123` and `diviora2026` | Both rejected ("No developer password is set yet" on a fresh install) |
-| B4 | First password + recovery key | **Reset Password**, leave the current password empty, enter a new one (10+ characters, mixed) | A recovery key `DVR-…` is shown once. Write it down |
-| B5 | Lockout | Enter a wrong password 5 times | "Too many attempts" for 60 s |
-| B6 | Recovery works | **Reset Password**, current = recovery key, new password | Accepted; the old password no longer works |
+| B3 | Only the developer's password | Try `admin123`, `diviora2026` and a licence key such as `DVL-TEST-1` | All rejected ("Invalid Access Token") |
+| B4 | Users cannot create their own developer password | **Reset Password** with an empty current password and any new one | Refused: "built into the app" |
+| B5 | Lockout survives restart | Enter a wrong password 5 times, close and reopen the app, try again | "Too many attempts" for 60 s |
+| B6 | Developer password and recovery key work | Unlock with the developer password; lock again (shortcut), then unlock with the recovery key `DVR-…` | Both open the developer panel |
 | B7 | Upload + lock config | Run Diviora **as Administrator**, upload an Equalizer APO `.txt`, press **Lock Config** | "Master configuration encrypted and locked …"; system audio changes (as in A4) |
 | B8 | Config not visible to users | As a normal (non-admin) Windows user, open `C:\ProgramData\Diviora\apo\` | "Access denied" |
 | B9 | Measured analysis | **Apply Matrix** after uploading | Peak gain, latency, init time and CPU show real values (e.g. peak gain equals your preamp + largest boost) |
