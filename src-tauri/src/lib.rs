@@ -25,11 +25,11 @@ async fn auto_update(app: tauri::AppHandle) {
             set(format!("installing version {}…", update.version));
             match update.download_and_install(|_, _| {}, || {}).await {
                 Ok(()) => app.restart(),
-                Err(e) => set(format!("update to {} failed: {}", update.version, e)),
+                Err(e) => set(format!("update to {} failed: {}", update.version, error_chain(&e))),
             }
         }
         Ok(None) => set(format!("up to date (checked {})", chrono::Local::now().format("%H:%M"))),
-        Err(e) => set(format!("update check failed: {}", e)),
+        Err(e) => set(format!("update check failed: {}", error_chain(&e))),
     }
 }
 
@@ -148,3 +148,19 @@ async fn tokio_sleep(secs: u64) {
 
 /// Result of the last update check, shown in the app (Licence section).
 pub static UPDATE_STATUS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// An error with all its causes ("error sending request" alone does not say why).
+#[cfg(desktop)]
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        let t = c.to_string();
+        if !out.contains(&t) {
+            out.push_str(" → ");
+            out.push_str(&t);
+        }
+        cur = c.source();
+    }
+    out
+}

@@ -39,7 +39,9 @@ windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Securit
 ureq = "2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-updater = "2"
+# Windows' own TLS stack and certificate store (like Chrome), so antivirus HTTPS scanning or
+# company proxies with their own certificates do not break updates; system proxy settings too.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["native-tls", "system-proxy", "zip"] }
 
 # Smaller, faster release builds (installer and APK). Panics stay "unwind" so the DSP's
 # C interface can catch them.
