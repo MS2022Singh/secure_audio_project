@@ -684,16 +684,18 @@ fn parse_biquad(toks: &[&str]) -> Result<Option<BiquadSpec>, String> {
     }
 
     let freq = freq.ok_or("missing Fc")?;
-    if !(1.0..=96_000.0).contains(&freq) {
+    // Equalizer APO accepts wide ranges; frequencies above Nyquist are clamped by the engine,
+    // and the output safety clip protects the speakers from extreme gains.
+    if !(freq > 0.0 && freq <= 1_000_000.0) {
         return Err(format!("frequency {} Hz out of range", freq));
     }
-    if !(-60.0..=36.0).contains(&gain) {
+    if !(-200.0..=200.0).contains(&gain) {
         return Err(format!("gain {} dB out of range", gain));
     }
     let shape = shape.unwrap_or(Shape::Q(std::f64::consts::FRAC_1_SQRT_2));
     match shape {
-        Shape::Q(q) if !(q > 0.0 && q <= 100.0) => return Err(format!("Q {} out of range", q)),
-        Shape::SlopeDbPerOct(s) if !(s > 0.0 && s <= 24.0) => return Err(format!("slope {} dB/oct out of range", s)),
+        Shape::Q(q) if !(q > 0.0 && q <= 10_000.0) => return Err(format!("Q {} out of range", q)),
+        Shape::SlopeDbPerOct(s) if !(s > 0.0 && s <= 96.0) => return Err(format!("slope {} dB/oct out of range", s)),
         _ => {}
     }
     Ok(Some(BiquadSpec { kind, freq, gain_db: gain, shape }))
@@ -712,7 +714,17 @@ fn parse_copy(args: &str) -> Result<Vec<(usize, Vec<(usize, f64)>)>, String> {
         let (dest, expr) = assign.split_once('=').ok_or_else(|| format!("'{}' is not an assignment", assign))?;
         let dest = channel_index(dest).ok_or_else(|| format!("unknown channel '{}'", dest))?;
         let mut sources = Vec::new();
-        for term in expr.split('+').filter(|t| !t.is_empty()) {
+        // "L-R" / "0.5*L-0.5*R": subtraction is addition of a negated term (but not the
+        // minus of a negative factor or exponent such as "-6dB*L" or "1e-3*L").
+        let mut norm = String::new();
+        let chars: Vec<char> = expr.chars().collect();
+        for (k, c) in chars.iter().enumerate() {
+            if *c == '-' && k > 0 && !matches!(chars[k - 1], '+' | '*' | 'e' | 'E' | '=') {
+                norm.push('+');
+            }
+            norm.push(*c);
+        }
+        for term in norm.split('+').filter(|t| !t.is_empty()) {
             let (factor, ch) = match term.split_once('*') {
                 Some((f, c)) => (parse_factor(f).ok_or_else(|| format!("bad factor '{}'", f))?, c),
                 None => {
@@ -800,6 +812,20 @@ mod tests {
         assert_eq!(cfg.stages_for_device("Headphones (USB)").len(), 3);
         let reasons: Vec<_> = cfg.warnings.iter().map(|w| w.text.clone()).collect();
         assert_eq!(reasons, vec!["Include: missing.txt", "Foo: bar"]);
+    }
+
+    #[test]
+    fn copy_with_subtraction_and_wide_ranges() {
+        let cfg = parse("Copy: L=L-R R=0.5*R-0.5*L C=-6dB*L+-6dB*R\nFilter: ON PK Fc 30000 Hz Gain 48 dB Q 150\n", None);
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+        match &cfg.stages[0].1 {
+            Stage::Mix { routes } => {
+                assert_eq!(routes[0], (0, vec![(0, 1.0), (1, -1.0)]));
+                assert_eq!(routes[1], (1, vec![(1, 0.5), (0, -0.5)]));
+                assert!((routes[2].1[0].1 - 0.501187).abs() < 1e-5);
+            }
+            s => panic!("{:?}", s),
+        }
     }
 
     #[test]

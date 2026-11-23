@@ -298,6 +298,7 @@
                         ● Upload a configuration file, then press Lock Config.
                     </div>
 
+                    <pre id="boxApoWarnings" style="display:none; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; background: #1a0f12; border: 1px solid var(--error-red); color: #ffb3bd; border-radius: 6px; padding: 10px 12px; font-size: 12px; margin: 0 0 14px 0; user-select: text;"></pre>
                     <div id="boxDllTelemetry" class="telemetry-bar">
                         • AUDIODG HOOK STATUS: checking…
                     </div>
@@ -894,7 +895,7 @@
 
         // Updates on phones: Android does not let an app replace itself silently, so offer it.
         let pendingUpdateUrl = "";
-        async function checkPhoneUpdate() {
+        async function checkPhoneUpdate(manual) {
             if (!document.body.classList.contains('mobile')) return;
             try {
                 const u = await invokeCmd('check_for_update');
@@ -904,7 +905,10 @@
                         `Version ${u.latest} is available (you have ${u.current}). Download it, then open the file to install. Your library and licence are kept.`;
                     document.getElementById('boxUpdateBanner').style.display = 'flex';
                 }
-            } catch (e) {}
+                if (manual) return u;
+            } catch (e) {
+                if (manual) throw e;
+            }
         }
         document.getElementById('btnInstallUpdate').addEventListener('click', async () => {
             try { await invokeCmd('open_update_download', { url: pendingUpdateUrl }); }
@@ -1014,8 +1018,8 @@
             btn.disabled = true; btn.innerText = "Checking…";
             try {
                 if (document.body.classList.contains('mobile')) {
-                    await checkPhoneUpdate();
-                    if (!pendingUpdateUrl) alert("You have the latest version.");
+                    const u = await checkPhoneUpdate(true);
+                    if (!pendingUpdateUrl) alert(`You have the latest version (${u ? u.current : ''}; newest published: ${u ? u.latest : '?'}).`);
                 } else {
                     alert("Updates: " + await invokeCmd('check_updates_now'));
                 }
@@ -1146,7 +1150,15 @@
             catch (err) { alert("Upload failed: " + err); e.target.value = ""; return; }
             e.target.value = "";
             setTimeout(updateDynamicEstimatedProperties, 300);
-            if (msg.includes('not supported')) alert(msg);
+            const wbox = document.getElementById('boxApoWarnings');
+            const nl = msg.indexOf('\n');
+            if (nl >= 0) {
+                wbox.innerText = msg.slice(nl + 1);
+                wbox.style.display = 'block';
+                alert(msg.slice(0, nl) + "\nSome lines are not supported: the full list is shown below the upload box.");
+            } else {
+                wbox.style.display = 'none';
+            }
             document.getElementById('toggleApoEnableConfig').checked = true;
             document.getElementById('lblApoToggleStatus').innerText = "ENABLED";
             document.getElementById('lblApoToggleStatus').style.color = "var(--primary-green)";

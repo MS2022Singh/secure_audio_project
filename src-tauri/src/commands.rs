@@ -236,8 +236,8 @@ pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: Stat
         if locked { ", applied system-wide" } else { "; press Lock Config to apply system-wide" }
     );
     if !summary.warnings.is_empty() {
-        msg.push_str(&format!(" {} line(s) not supported: {}", summary.warnings.len(),
-            summary.warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>().join("; ")));
+        msg.push_str(&format!("\n{} line(s) not supported:\n{}", summary.warnings.len(),
+            summary.warnings.iter().map(|w| format!("• {}", w)).collect::<Vec<_>>().join("\n")));
     }
     Ok(msg)
 }
