@@ -12,7 +12,7 @@ applies them automatically. The app also updates itself.
 Built automatically from the latest green CI run. Direct links work in any browser or phone:
 
 - **Windows installer:** https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/Diviora-Setup-windows-x64.exe
-- **Android APK:** https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/Diviora-android-arm64-test.apk
+- **Android APK:** https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/Diviora-android-test.apk
 - All files and notes: https://github.com/MS2022Singh/secure_audio_project/releases/tag/test-build
 
 Test builds aren't code-signed. Windows SmartScreen may say "Windows protected your PC": click

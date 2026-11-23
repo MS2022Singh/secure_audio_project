@@ -65,6 +65,11 @@
         .est-value { color: #fff; font-weight: bold; font-family: monospace; }
 
         .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.75); display: none; align-items: center; justify-content: center; z-index: 1000; }
+        .licence-card summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 800; user-select: none; }
+        .licence-card summary::-webkit-details-marker { display: none; }
+        .licence-card summary::after { content: "▸"; margin-left: auto; color: var(--text-muted); transition: transform 0.2s; }
+        .licence-card[open] summary::after { transform: rotate(90deg); }
+        .licence-state { font-size: 11px; font-weight: 800; letter-spacing: 0.6px; text-transform: uppercase; color: var(--primary-green); border: 1px solid var(--primary-green); border-radius: 10px; padding: 2px 8px; }
         .licence-line { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
         .licence-line b { color: #fff; }
         /* Phones: sidebar becomes a top bar, cards use the full width. */
@@ -130,13 +135,13 @@
                     </div>
                 </div>
 
-                <div class="card">
-                    <h3 style="margin: 0 0 12px 0;">🔑 Licence</h3>
-                    <div class="licence-line" id="lblLicenceSummary">Checking licence…</div>
+                <details class="card licence-card" id="boxLicenceDetails">
+                    <summary><span>🔑 Licence</span><span class="licence-state" id="lblLicenceBadge">Active</span></summary>
+                    <div class="licence-line" id="lblLicenceSummary" style="margin-top: 12px;">Checking licence…</div>
                     <div style="display: flex; gap: 10px; margin-top: 14px;">
                         <button id="btnConsumerResetPassword" class="btn-dark">Reset Client Token</button>
                     </div>
-                </div>
+                </details>
             </div>
 
             <!-- ACTIVATION (first screen until this device is activated) -->
@@ -452,6 +457,8 @@
             document.getElementById('boxSidebarPlaylist').style.display = access ? 'flex' : 'none';
             document.getElementById('menuActivation').style.display = licenceInfo.activated ? 'none' : 'flex';
             const sum = document.getElementById('lblLicenceSummary');
+            document.getElementById('lblLicenceBadge').innerText = licenceInfo.activated
+                ? (licenceInfo.offline ? 'Active · test mode' : 'Active') : (isMasterAuthenticated ? 'Developer' : 'Not activated');
             if (licenceInfo.activated) {
                 sum.innerHTML = `Licence <b>${licenceInfo.licence_key}</b> is active on this device` +
                     (licenceInfo.expires ? ` until <b>${licenceInfo.expires}</b>` : '') + '.' +

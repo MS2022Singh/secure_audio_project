@@ -50,6 +50,16 @@ jobs:
           npm install
           npx tauri build
 
+      - name: Run the installer silently and show its log (CI has no speakers, so the audio step may stop there)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $p = Start-Process $setup.FullName -ArgumentList '/S' -Wait -PassThru
+          "installer exit code: $($p.ExitCode)"
+          Get-ChildItem "C:\Program Files\Diviora Psychoacoustics" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+          if (Test-Path C:\ProgramData\Diviora\install.log) { Get-Content C:\ProgramData\Diviora\install.log } else { 'install.log missing' }
+
       - name: Upload build output
         uses: actions/upload-artifact@v4
         with:
@@ -76,7 +86,7 @@ jobs:
           node-version: 20
 
       - name: Rust Android targets
-        run: rustup target add aarch64-linux-android x86_64-linux-android
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
 
       - name: Linux build dependencies (host tools)
         run: |
@@ -87,34 +97,41 @@ jobs:
         working-directory: diviora-dsp
         run: cargo test --release
 
-      - name: Build optimised Android APKs (arm64 for phones, x86_64 for the emulator test)
+      - name: Build the optimised Android APK (64-bit and 32-bit phones, plus x86_64 for the emulator test)
         run: |
           export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           npm install
           npx tauri android init --ci
           # Package the NDK C++ runtime that oboe (audio output) needs, or the app crashes on start.
           SYS="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib"
-          for pair in arm64-v8a:aarch64-linux-android x86_64:x86_64-linux-android; do
+          for pair in arm64-v8a:aarch64-linux-android armeabi-v7a:arm-linux-androideabi x86_64:x86_64-linux-android; do
             abi=${pair%%:*}; triple=${pair#*:}
             mkdir -p "src-tauri/gen/android/app/src/main/jniLibs/$abi"
             cp "$SYS/$triple/libc++_shared.so" "src-tauri/gen/android/app/src/main/jniLibs/$abi/"
           done
-          npx tauri android build --apk --split-per-abi --target aarch64 x86_64
+          npx tauri android build --apk --target aarch64 armv7 x86_64
 
-      - name: Sign the APKs (test key, generated per build)
+      - name: Sign the APKs (fixed public TEST key, so test builds install over each other)
         run: |
           BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
-          keytool -genkeypair -keystore test.jks -storepass testpass -keypass testpass -alias test \
-            -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=Diviora test build" -noprompt
+          KS=.github/test-signing/diviora-test.jks
+          in=$(find src-tauri/gen/android/app/build/outputs/apk -name "*release*.apk" | head -1)
+          echo "built: $in"
           mkdir apk
-          for abi in arm64 x86_64; do
-            in=$(find src-tauri/gen/android/app/build/outputs/apk -path "*${abi}*" -name "*release*.apk" | head -1)
-            echo "$abi: $in"
-            "$BT/zipalign" -f -p 4 "$in" "apk/aligned-$abi.apk"
-            "$BT/apksigner" sign --ks test.jks --ks-pass pass:testpass --key-pass pass:testpass \
-              --out "apk/Diviora-android-$abi-test.apk" "apk/aligned-$abi.apk"
+          # Emulator test APK: all ABIs. Phone APK: the same without the x86_64 libraries.
+          cp "$in" apk/all.apk
+          cp "$in" apk/phone.apk
+          zip -q -d apk/phone.apk 'lib/x86_64/*'
+          for n in all phone; do
+            "$BT/zipalign" -f -p 4 "apk/$n.apk" "apk/aligned-$n.apk"
+            "$BT/apksigner" sign --ks "$KS" --ks-pass pass:diviora-test --key-pass pass:diviora-test \
+              --out "apk/signed-$n.apk" "apk/aligned-$n.apk"
+            "$BT/apksigner" verify "apk/signed-$n.apk"
           done
-          rm apk/aligned-*.apk
+          mv apk/signed-phone.apk apk/Diviora-android-test.apk
+          mv apk/signed-all.apk apk/Diviora-android-emulator-test.apk
+          rm apk/all.apk apk/phone.apk apk/aligned-*.apk
+          unzip -l apk/Diviora-android-test.apk | grep "lib/"
           ls -la apk
 
       - name: Enable KVM for the emulator
@@ -130,7 +147,7 @@ jobs:
           arch: x86_64
           target: google_apis
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
-          script: bash .github/android-smoke-test.sh apk/Diviora-android-x86_64-test.apk
+          script: bash .github/android-smoke-test.sh apk/Diviora-android-emulator-test.apk
 
       - name: Upload APKs and emulator log
         if: always()
@@ -138,7 +155,7 @@ jobs:
         with:
           name: diviora-android-${{ github.sha }}
           path: |
-            apk/Diviora-android-arm64-test.apk
+            apk/Diviora-android-test.apk
             logcat.txt
 
   # Publish every green build as the "test-build" pre-release: plain download links
@@ -158,9 +175,9 @@ jobs:
         run: |
           mkdir out
           find dl -name "*-setup.exe" -exec cp {} out/Diviora-Setup-windows-x64.exe \;
-          find dl -name "Diviora-android-arm64-test.apk" -exec cp {} out/Diviora-android-arm64-test.apk \;
+          find dl -name "Diviora-android-test.apk" -exec cp {} out/Diviora-android-test.apk \;
           ls -la out
-          test -f out/Diviora-Setup-windows-x64.exe && test -f out/Diviora-android-arm64-test.apk
+          test -f out/Diviora-Setup-windows-x64.exe && test -f out/Diviora-android-test.apk
 
       - name: Replace the test-build release
         env:
@@ -171,4 +188,4 @@ jobs:
           gh release create test-build out/* --repo "$REPO" --prerelease \
             --target "${{ github.sha }}" \
             --title "Test build (${GITHUB_REF_NAME}, ${GITHUB_SHA::7})" \
-            --notes "Latest automatic test build. Windows: run Diviora-Setup-windows-x64.exe (if SmartScreen warns: More info → Run anyway). Android: install Diviora-android-arm64-test.apk (allow installing unknown apps). How to check everything: docs/ACCEPTANCE_TESTS.md. Not for distribution to users."
+            --notes "Latest automatic test build. Windows: run Diviora-Setup-windows-x64.exe (if SmartScreen warns: More info → Run anyway). Android: install Diviora-android-test.apk (allow installing unknown apps). How to check everything: docs/ACCEPTANCE_TESTS.md. Not for distribution to users."

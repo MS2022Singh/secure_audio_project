@@ -6,7 +6,7 @@ result. Record **Pass / Fail** and keep the notes for anything that fails.
 Before starting, download the latest test build (works in any browser or phone):
 
 - Windows: https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/Diviora-Setup-windows-x64.exe
-- Android: https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/Diviora-android-arm64-test.apk
+- Android: https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/Diviora-android-test.apk
 
 Test builds aren't code-signed: on Windows click **More info → Run anyway** if SmartScreen warns.
 
@@ -80,7 +80,7 @@ which needs the server reachable from both; the single-PC tests (D3–D5) work w
 
 | # | Requirement | Steps | Expected |
 |---|---|---|---|
-| F1 | Install | Download `Diviora-android-arm64-test.apk` on the phone, open it, and allow "install unknown apps" | Diviora installs and opens |
+| F1 | Install | Download `Diviora-android-test.apk` on the phone, open it, and allow "install unknown apps" | Diviora installs and opens |
 | F2 | Activation | Enter a licence key or invite (internet needed once) | "Activated … bound to this device" |
 | F3 | Config + watermark applied | After activation (wait up to 5 min for the first sync), import a song and play it | It sounds processed by the developer's configuration |
 | F4 | Save processed | **Download Processed Audio** | A `…_DIVIORA_PROCESSED.wav` appears in the playlist; C4/C5-style detection works on it |
