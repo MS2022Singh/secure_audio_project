@@ -73,6 +73,10 @@
         .licence-card summary::after { content: "▸"; margin-left: auto; color: var(--text-muted); transition: transform 0.2s; }
         .licence-card[open] summary::after { transform: rotate(90deg); }
         .licence-state { font-size: 11px; font-weight: 800; letter-spacing: 0.6px; text-transform: uppercase; color: var(--primary-green); border: 1px solid var(--primary-green); border-radius: 10px; padding: 2px 8px; }
+        .volume-box { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); margin-left: 6px; }
+        .volume-box input[type=range] { width: 120px; accent-color: var(--primary-green); padding: 0; margin: 0; }
+        .volume-box span { min-width: 38px; font-family: monospace; }
+        .update-banner { display: none; align-items: center; gap: 12px; flex-wrap: wrap; background: #10261a; border: 1px solid var(--primary-green); border-radius: 10px; padding: 12px 16px; font-size: 13.5px; }
         .licence-line { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
         .licence-line b { color: #fff; }
         /* Phones: sidebar becomes a top bar, cards use the full width. */
@@ -116,6 +120,12 @@
     <!-- MAIN CONTENT PLANE -->
     <div class="main-content">
         <div class="workspace-plane">
+            <!-- UPDATE (phones: a newer build is available; Windows updates itself) -->
+            <div class="update-banner" id="boxUpdateBanner">
+                <span id="lblUpdateText">A new version is available.</span>
+                <button class="btn-green" id="btnInstallUpdate">Download update</button>
+            </div>
+
             <!-- CONSUMER VIEW -->
             <div id="panelConsumerView" style="display: flex; flex-direction: column; gap: 20px;">
                 <h1 style="margin:0 0 10px 0; font-size: 26px;">DIVIORA CONSUMER PANEL</h1>
@@ -134,6 +144,7 @@
                         <button class="btn-green" id="btnTogglePlayPause">▶ Play</button>
                         <button class="btn-dark" id="btnStopPlayback">⏹ Stop</button>
                         <button class="btn-dark" id="btnNextTrack">Next ⏭</button>
+                        <label class="volume-box" title="Volume">🔊 <input type="range" id="rngVolume" min="0" max="100" value="100" aria-label="Volume" /> <span id="lblVolume">100%</span></label>
                         <button class="btn-outline-green" id="btnExportProcessedTrack" style="margin-left: auto;">📥 Download Processed Audio</button>
                     </div>
                 </div>
@@ -460,6 +471,8 @@
             document.getElementById('boxSidebarPlaylist').style.display = access ? 'flex' : 'none';
             document.getElementById('menuActivation').style.display = licenceInfo.activated ? 'none' : 'flex';
             const sum = document.getElementById('lblLicenceSummary');
+            // The developer password is built into the app: it cannot be reset on a device.
+            if (licenceInfo.dev_password_built_in) document.getElementById('btnOpenResetModal').style.display = 'none';
             document.getElementById('lblLicenceBadge').innerText = licenceInfo.activated
                 ? (licenceInfo.offline ? 'Active · test mode' : 'Active') : (isMasterAuthenticated ? 'Developer' : 'Not activated');
             if (licenceInfo.activated) {
@@ -832,6 +845,43 @@
             }
             setPlayButton();
         }
+
+        // Volume (remembered on this device).
+        (function () {
+            const rng = document.getElementById('rngVolume');
+            let saved = 100;
+            try { saved = parseInt(localStorage.getItem('diviora.volume') || '100'); } catch (e) {}
+            if (isNaN(saved)) saved = 100;
+            rng.value = saved;
+            const apply = async () => {
+                document.getElementById('lblVolume').innerText = rng.value + '%';
+                try { localStorage.setItem('diviora.volume', rng.value); } catch (e) {}
+                try { await invokeCmd('set_playback_volume', { volume: rng.value / 100 }); } catch (e) {}
+            };
+            rng.addEventListener('input', apply);
+            window.addEventListener('DOMContentLoaded', apply);
+        })();
+
+        // Updates on phones: Android does not let an app replace itself silently, so offer it.
+        let pendingUpdateUrl = "";
+        async function checkPhoneUpdate() {
+            if (!document.body.classList.contains('mobile')) return;
+            try {
+                const u = await invokeCmd('check_for_update');
+                if (u && u.available) {
+                    pendingUpdateUrl = u.url;
+                    document.getElementById('lblUpdateText').innerText =
+                        `Version ${u.latest} is available (you have ${u.current}). Download it, then open the file to install. Your library and licence are kept.`;
+                    document.getElementById('boxUpdateBanner').style.display = 'flex';
+                }
+            } catch (e) {}
+        }
+        document.getElementById('btnInstallUpdate').addEventListener('click', async () => {
+            try { await invokeCmd('open_update_download', { url: pendingUpdateUrl }); }
+            catch (err) { alert("Could not open the download: " + err); }
+        });
+        window.addEventListener('DOMContentLoaded', () => setTimeout(checkPhoneUpdate, 1500));
+        setInterval(checkPhoneUpdate, 6 * 3600 * 1000);
 
         // UNIFIED PLAY/PAUSE, STOP, PREV, NEXT CONTROLS
         document.getElementById('btnTogglePlayPause').addEventListener('click', async () => {

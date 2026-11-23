@@ -31,7 +31,8 @@ async fn auto_update(app: tauri::AppHandle) {
 pub fn run() {
     let manager = Arc::new(Mutex::new(PlaybackManager::new().expect("Failed to initialize PlaybackManager engine")));
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
 
@@ -52,7 +53,13 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move { auto_update(handle).await });
+                // At start-up and then every 6 hours while the app runs.
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        auto_update(handle.clone()).await;
+                        tokio_sleep(6 * 3600).await;
+                    }
+                });
             }
             Ok(())
         })
@@ -92,7 +99,10 @@ pub fn run() {
             commands::platform_info,
             commands::licence_status,
             commands::lock_developer_session,
-            commands::pause_playback
+            commands::pause_playback,
+            commands::set_playback_volume,
+            commands::check_for_update,
+            commands::open_update_download
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -118,4 +128,9 @@ fn init_android_audio_context(app: &tauri::App) {
             }
         });
     });
+}
+
+#[cfg(desktop)]
+async fn tokio_sleep(secs: u64) {
+    let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(std::time::Duration::from_secs(secs))).await;
 }

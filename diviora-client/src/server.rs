@@ -75,3 +75,8 @@ pub fn admin_publish_config(url: &str, admin_token: &str, text: &str) -> Result<
         .map_err(err)?.into_json().map_err(|e| e.to_string())?;
     v.get("version").and_then(|t| t.as_i64()).ok_or_else(|| "Bad server reply".into())
 }
+
+/// Fetch a JSON document (e.g. the app's update manifest). Follows redirects.
+pub fn get_json(url: &str) -> Result<serde_json::Value, String> {
+    agent().get(url).call().map_err(err)?.into_json().map_err(|e| e.to_string())
+}

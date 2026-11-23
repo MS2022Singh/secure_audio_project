@@ -49,10 +49,22 @@ jobs:
         with:
           node-version: 20
 
+      - name: Test-build version and update signature (public TEST key, see .github/test-signing)
+        shell: pwsh
+        run: |
+          $v = "0.3.${{ github.run_number }}"
+          $pub = (Get-Content .github/test-signing/updater-test.key.pub -Raw).Trim()
+          @{ version = $v; bundle = @{ createUpdaterArtifacts = $true }; plugins = @{ updater = @{ pubkey = $pub;
+             endpoints = @("https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/latest.json") } } } |
+            ConvertTo-Json -Depth 6 | Set-Content src-tauri/tauri.ci.json
+          "TAURI_SIGNING_PRIVATE_KEY=$((Get-Content .github/test-signing/updater-test.key -Raw).Trim())" >> $env:GITHUB_ENV
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=diviora-test" >> $env:GITHUB_ENV
+          Get-Content src-tauri/tauri.ci.json
+
       - name: Build the Windows installer (unsigned test build)
         run: |
           npm install
-          npx tauri build
+          npx tauri build --config src-tauri/tauri.ci.json
 
       - name: Run the installer silently and show its log (CI has no speakers, so the audio step may stop there)
         shell: pwsh
@@ -76,6 +88,7 @@ jobs:
             windows-apo/build/Release/injector_single_slot.exe
             diviora-sync/target/release/diviora-sync.exe
             src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe.sig
 
   android:
     runs-on: ubuntu-latest
@@ -115,7 +128,8 @@ jobs:
             mkdir -p "src-tauri/gen/android/app/src/main/jniLibs/$abi"
             cp "$SYS/$triple/libc++_shared.so" "src-tauri/gen/android/app/src/main/jniLibs/$abi/"
           done
-          npx tauri android build --apk --target aarch64 armv7 x86_64
+          echo "{\"version\": \"0.3.${{ github.run_number }}\"}" > src-tauri/tauri.ci.json
+          npx tauri android build --apk --target aarch64 armv7 x86_64 --config src-tauri/tauri.ci.json
 
       - name: Sign the APKs (fixed public TEST key, so test builds install over each other)
         run: |
@@ -184,6 +198,21 @@ jobs:
           find dl -name "Diviora-android-test.apk" -exec cp {} out/Diviora-android-test.apk \;
           ls -la out
           test -f out/Diviora-Setup-windows-x64.exe && test -f out/Diviora-android-test.apk
+          # Update manifest: Windows installs it automatically (signature checked by the app);
+          # Android shows "update available".
+          SIG=$(cat "$(find dl -name '*-setup.exe.sig' | head -1)")
+          BASE="https://github.com/${{ github.repository }}/releases/download/test-build"
+          SIG="$SIG" BASE="$BASE" V="0.3.${{ github.run_number }}" python3 -c '
+          import json, os, datetime
+          print(json.dumps({
+            "version": os.environ["V"],
+            "notes": "Diviora test build " + os.environ["V"],
+            "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "platforms": {
+              "windows-x86_64": {"signature": os.environ["SIG"], "url": os.environ["BASE"] + "/Diviora-Setup-windows-x64.exe"},
+              "android": {"signature": "", "url": os.environ["BASE"] + "/Diviora-android-test.apk"}
+            }}, indent=2))' > out/latest.json
+          cat out/latest.json
 
       - name: Replace the test-build release
         env:
@@ -193,5 +222,5 @@ jobs:
           gh release delete test-build --repo "$REPO" --yes --cleanup-tag || true
           gh release create test-build out/* --repo "$REPO" --prerelease \
             --target "${{ github.sha }}" \
-            --title "Test build (${GITHUB_REF_NAME}, ${GITHUB_SHA::7})" \
+            --title "Test build 0.3.${{ github.run_number }} (${GITHUB_REF_NAME}, ${GITHUB_SHA::7})" \
             --notes "Latest automatic test build. Windows: run Diviora-Setup-windows-x64.exe (if SmartScreen warns: More info → Run anyway). Android: install Diviora-android-test.apk (allow installing unknown apps). How to check everything: docs/ACCEPTANCE_TESTS.md. Not for distribution to users."

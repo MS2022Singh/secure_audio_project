@@ -274,6 +274,48 @@ pub fn set_native_track_path(path: String, manager: State<'_, Arc<Mutex<Playback
     Ok(name)
 }
 
+/// Player volume, 0.0 (mute) to 1.0 (full); applies immediately and to later tracks.
+#[tauri::command]
+pub fn set_playback_volume(volume: f32, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<f32, String> {
+    let v = if volume.is_finite() { volume.clamp(0.0, 1.0) } else { 1.0 };
+    manager.inner().lock().unwrap().set_volume(v);
+    Ok(v)
+}
+
+/// Where test/released builds publish their update manifest (set at build time).
+const UPDATE_MANIFEST: &str = match option_env!("DIVIORA_UPDATE_MANIFEST") {
+    Some(u) => u,
+    None => "https://github.com/MS2022Singh/secure_audio_project/releases/download/test-build/latest.json",
+};
+
+fn version_tuple(v: &str) -> (u64, u64, u64) {
+    let mut it = v.trim().trim_start_matches('v').split(|c: char| c == '.' || c == '-').map(|p| p.parse::<u64>().unwrap_or(0));
+    (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
+}
+
+/// Android cannot replace itself silently (outside an app store): the app checks for a newer
+/// build and offers it; the user taps Install. Windows updates itself (see lib.rs).
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle) -> Result<serde_json::Value, String> {
+    let current = app.package_info().version.to_string();
+    let manifest = tauri::async_runtime::spawn_blocking(|| diviora_client::server::get_json(UPDATE_MANIFEST))
+        .await.map_err(|e| e.to_string())??;
+    let latest = manifest.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0").to_string();
+    let url = manifest.pointer("/platforms/android/url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let available = version_tuple(&latest) > version_tuple(&current) && !url.is_empty();
+    Ok(serde_json::json!({ "available": available, "current": current, "latest": latest, "url": url }))
+}
+
+/// Open the update download (Android: the browser downloads the APK, then the user installs it).
+#[tauri::command]
+pub fn open_update_download(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if !url.starts_with("https://github.com/MS2022Singh/secure_audio_project/releases/") {
+        return Err("Unexpected update address.".into());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
 /// Pause (true) or resume (false) the current track at its position.
 #[tauri::command]
 pub fn pause_playback(paused: bool, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<bool, String> {
@@ -326,7 +368,8 @@ pub fn reset_client_token() -> Result<String, String> {
 
 #[tauri::command]
 pub fn verify_master_password(password: String) -> Result<bool, String> {
-    let ok = SecurityManager::verify_master_pass(&password)?;
+    // Ignore spaces/new lines picked up when the password is copied and pasted.
+    let ok = SecurityManager::verify_master_pass(password.trim())?;
     if ok {
         DEVELOPER_UNLOCKED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -351,6 +394,7 @@ pub fn licence_status() -> serde_json::Value {
         "expires": if st.licence_expires_at > 0 { until } else { String::new() },
         "offline": st.session == "offline",
         "developer": DEVELOPER_UNLOCKED.load(std::sync::atomic::Ordering::Relaxed),
+        "dev_password_built_in": SecurityManager::password_is_built_in(),
     })
 }
 

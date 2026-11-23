@@ -45,6 +45,7 @@ pub struct PlaybackManager {
     pub meter: Arc<Meter>,
     pub sample_rate: Arc<AtomicU32>,
     paused: Arc<AtomicBool>,
+    volume_bits: Arc<AtomicU32>,
     generation: Arc<AtomicU64>,
 }
 
@@ -145,6 +146,7 @@ impl PlaybackManager {
             meter: Arc::new(Meter::default()),
             sample_rate: Arc::new(AtomicU32::new(0)),
             paused: Arc::new(AtomicBool::new(false)),
+            volume_bits: Arc::new(AtomicU32::new(1f32.to_bits())),
             generation: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -160,6 +162,10 @@ impl PlaybackManager {
 
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::Relaxed)
+    }
+
+    pub fn set_volume(&self, v: f32) {
+        self.volume_bits.store(v.to_bits(), Ordering::Relaxed);
     }
 
     /// Pause/resume the current track at its position.
@@ -195,6 +201,7 @@ impl PlaybackManager {
         let status_ref = Arc::clone(&self.status);
         let meter = Arc::clone(&self.meter);
         let paused = Arc::clone(&self.paused);
+        let volume = Arc::clone(&self.volume_bits);
         let rate = Arc::clone(&self.sample_rate);
         let device_ref = Arc::clone(&self.output_device);
         let track_path = path_str.clone();
@@ -243,10 +250,15 @@ impl PlaybackManager {
                 }
             };
             rate.store(source.sample_rate(), Ordering::Relaxed);
+            sink.set_volume(f32::from_bits(volume.load(Ordering::Relaxed)));
             sink.append(Metered::new(source, Arc::clone(&meter)));
             sink.play();
 
             while !sink.empty() && gen_ref.load(Ordering::Acquire) == new_gen {
+                let vol = f32::from_bits(volume.load(Ordering::Relaxed));
+                if (sink.volume() - vol).abs() > 1e-4 {
+                    sink.set_volume(vol);
+                }
                 let want_pause = paused.load(Ordering::Relaxed);
                 if want_pause && !sink.is_paused() {
                     sink.pause();

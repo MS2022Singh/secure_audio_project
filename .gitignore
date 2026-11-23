@@ -25,3 +25,4 @@ __pycache__/
 *.db
 backend/test-secrets.json
 backend/test-licences.db
+src-tauri/tauri.ci.json
