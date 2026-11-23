@@ -164,3 +164,13 @@ fn error_chain(e: &dyn std::error::Error) -> String {
     }
     out
 }
+
+/// Command-line modes of the desktop app (no window): `--apply-locked-config <file>` is the
+/// elevated helper behind Lock Config. Returns Some(exit code) if a mode ran.
+pub fn handle_cli() -> Option<i32> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 3 && args[1] == "--apply-locked-config" {
+        return Some(apo_config::apply_locked_config_from_file(std::path::Path::new(&args[2])));
+    }
+    None
+}

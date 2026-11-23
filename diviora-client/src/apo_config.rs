@@ -48,6 +48,31 @@ pub fn write_locked_config(text: &str) -> Result<PathBuf, String> {
 }
 
 /// Remove plaintext configs left by older builds (they exposed the master config to any user).
+/// Like `write_locked_config`, but when this process lacks the rights (a normal, non-elevated
+/// app), Windows asks for administrator permission just for this step: the configuration is
+/// handed to an elevated copy of the app through a temporary file encrypted for this Windows
+/// user only (DPAPI), which is deleted afterwards.
+pub fn write_locked_config_elevated(text: &str) -> Result<PathBuf, String> {
+    match imp::write_locked_config(text) {
+        Ok(p) => Ok(p),
+        Err(e) if e.contains("error 5") || e.to_lowercase().contains("denied") || e.contains("Administrator") => imp::write_via_elevation(text),
+        Err(e) => Err(e),
+    }
+}
+
+/// Entry point of the elevated helper: `app.exe --apply-locked-config <file>`.
+/// Returns the process exit code; the error text (if any) is written to `<file>.result`.
+pub fn apply_locked_config_from_file(path: &std::path::Path) -> i32 {
+    let r = std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| imp::unprotect_user(&b)).and_then(|t| imp::write_locked_config(&t));
+    match r {
+        Ok(_) => 0,
+        Err(e) => {
+            let _ = std::fs::write(path.with_extension("result"), e);
+            1
+        }
+    }
+}
+
 pub fn remove_legacy_plaintext() {
     let pd = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
     for name in ["active.txt", "config.txt"] {
@@ -71,7 +96,7 @@ mod imp {
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::Cryptography::{
-        CryptProtectData, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
     use windows_sys::Win32::Security::{
         GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
@@ -131,6 +156,83 @@ mod imp {
         }
     }
 
+    /// DPAPI for the current Windows user only (used for the hand-over file).
+    fn protect_user(text: &str) -> Result<Vec<u8>, String> {
+        let input = CRYPT_INTEGER_BLOB { cbData: text.len() as u32, pbData: text.as_ptr() as *mut u8 };
+        let entropy = CRYPT_INTEGER_BLOB { cbData: ENTROPY.len() as u32, pbData: ENTROPY.as_ptr() as *mut u8 };
+        let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        // SAFETY: as in `protect`.
+        unsafe {
+            if CryptProtectData(&input, std::ptr::null(), &entropy, std::ptr::null(), std::ptr::null(),
+                                CRYPTPROTECT_UI_FORBIDDEN, &mut out) == 0 {
+                return Err(format!("encryption failed ({})", std::io::Error::last_os_error()));
+            }
+            let blob = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
+            LocalFree(out.pbData as *mut c_void as _);
+            Ok(blob)
+        }
+    }
+
+    pub fn unprotect_user(blob: &[u8]) -> Result<String, String> {
+        let input = CRYPT_INTEGER_BLOB { cbData: blob.len() as u32, pbData: blob.as_ptr() as *mut u8 };
+        let entropy = CRYPT_INTEGER_BLOB { cbData: ENTROPY.len() as u32, pbData: ENTROPY.as_ptr() as *mut u8 };
+        let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        // SAFETY: input/entropy point to live buffers; out is freed with LocalFree.
+        unsafe {
+            if CryptUnprotectData(&input, std::ptr::null_mut(), &entropy, std::ptr::null(), std::ptr::null(),
+                                  CRYPTPROTECT_UI_FORBIDDEN, &mut out) == 0 {
+                return Err(format!("could not read the hand-over file ({}). Approve the prompt with your own Windows account.",
+                    std::io::Error::last_os_error()));
+            }
+            let bytes = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
+            LocalFree(out.pbData as *mut c_void as _);
+            String::from_utf8(bytes).map_err(|e| e.to_string())
+        }
+    }
+
+    pub fn write_via_elevation(text: &str) -> Result<PathBuf, String> {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let mut rnd = [0u8; 8];
+        let _ = getrandom_fill(&mut rnd);
+        let name: String = rnd.iter().map(|b| format!("{:02x}", b)).collect();
+        let handover = std::env::temp_dir().join(format!("diviora-lock-{}.bin", name));
+        std::fs::write(&handover, protect_user(text)?).map_err(|e| e.to_string())?;
+        let result_file = handover.with_extension("result");
+        let ps = format!(
+            "try {{ $p = Start-Process -FilePath '{}' -ArgumentList '--apply-locked-config','\"{}\"' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode }} catch {{ exit 1223 }}",
+            exe.display().to_string().replace('\'', "''"), handover.display()
+        );
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+            .creation_flags_no_window()
+            .status();
+        let detail = std::fs::read_to_string(&result_file).unwrap_or_default();
+        let _ = std::fs::remove_file(&handover);
+        let _ = std::fs::remove_file(&result_file);
+        match status.map(|s| s.code().unwrap_or(1)) {
+            Ok(0) => Ok(config_path()),
+            Ok(1223) => Err("Administrator permission was not given (the Windows prompt was declined).".into()),
+            Ok(_) => Err(if detail.is_empty() { "Locking with administrator rights failed.".into() } else { detail }),
+            Err(e) => Err(format!("could not ask for administrator permission: {}", e)),
+        }
+    }
+
+    fn getrandom_fill(buf: &mut [u8]) -> Result<(), ()> {
+        // Uniqueness only (not secrecy): time and process id are enough for a temp name.
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let v = (t as u64) ^ ((std::process::id() as u64) << 32);
+        for (i, b) in buf.iter_mut().enumerate() { *b = (v >> ((i % 8) * 8)) as u8; }
+        Ok(())
+    }
+
+    trait NoWindow { fn creation_flags_no_window(&mut self) -> &mut Self; }
+    impl NoWindow for std::process::Command {
+        fn creation_flags_no_window(&mut self) -> &mut Self {
+            use std::os::windows::process::CommandExt;
+            self.creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        }
+    }
+
     pub fn write_locked_config(text: &str) -> Result<PathBuf, String> {
         let dir = base_dir();
         let status = dir.join("status");
@@ -154,6 +256,12 @@ mod imp {
     use super::*;
     pub fn write_locked_config(_text: &str) -> Result<PathBuf, String> {
         Err("The system-wide APO configuration is only available on Windows.".into())
+    }
+    pub fn write_via_elevation(_text: &str) -> Result<PathBuf, String> {
+        write_locked_config(_text)
+    }
+    pub fn unprotect_user(_b: &[u8]) -> Result<String, String> {
+        Err("Windows only".into())
     }
 }
 

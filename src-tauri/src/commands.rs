@@ -77,7 +77,7 @@ fn compose_apo_payload() -> String {
 /// Re-write the locked config if Lock Config has been pressed (or a locked file exists).
 fn reapply_if_locked() -> Result<bool, String> {
     if *PROFILE_LOCKED.lock().unwrap() || crate::apo_config::config_path().exists() {
-        crate::apo_config::write_locked_config(&compose_apo_payload())?;
+        crate::apo_config::write_locked_config_elevated(&compose_apo_payload())?;
         return Ok(true);
     }
     Ok(false)
@@ -963,7 +963,7 @@ pub fn enforce_global_hardware_apo(manager: State<'_, Arc<Mutex<PlaybackManager>
     if payload.trim().is_empty() {
         return Err("Upload a configuration file (or enable the watermark) first, then press Lock Config.".to_string());
     }
-    let path = crate::apo_config::write_locked_config(&payload)?;
+    let path = crate::apo_config::write_locked_config_elevated(&payload)?;
     crate::apo_config::remove_legacy_plaintext();
     *PROFILE_LOCKED.lock().unwrap() = true;
     {
