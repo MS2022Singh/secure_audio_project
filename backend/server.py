@@ -107,7 +107,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     def verify_session(token: str) -> tuple:
         try:
             raw = base64.urlsafe_b64decode(token.encode())
-            msg, sig = raw.rsplit(b"|", 1)
+            # The signature is 32 binary bytes and may itself contain b"|": split by length.
+            msg, sep, sig = raw[:-33], raw[-33:-32], raw[-32:]
+            if sep != b"|" or len(sig) != 32:
+                raise ValueError("bad token")
             license_key, device_id, exp = msg.decode().split("|")
         except Exception:
             raise HTTPException(401, "Invalid session.")

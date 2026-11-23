@@ -61,3 +61,11 @@ def test_auth_required(client):
     assert client.get("/api/v3/config").status_code == 401
     assert client.get("/api/v3/config", headers={"Authorization": "Bearer forged"}).status_code == 401
     assert client.post("/api/v3/activate", json={"license_key": "NOPE-1234", "device_id": "DEVICE-FFFF-6666"}).status_code == 401
+
+
+def test_sessions_always_verify(client):
+    """Regression: a signature containing the separator byte must still verify (was ~12% failures)."""
+    for i in range(200):
+        key = admin(client, "post", "/api/v3/admin/licenses", json={"days": 30}).json()["license_key"]
+        sess = client.post("/api/v3/activate", json={"license_key": key, "device_id": f"DEVICE-LOOP-{i:04d}"}).json()["session"]
+        assert client.get("/api/v3/config", headers={"Authorization": f"Bearer {sess}"}).status_code == 200
