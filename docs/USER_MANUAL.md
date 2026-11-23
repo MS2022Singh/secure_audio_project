@@ -24,7 +24,7 @@ to the new device.
 
 ## 2. Activating your licence
 
-1. Open Diviora. On the **Consumer Deck**, find **Consumer Activation Gateway**.
+1. Open Diviora. Until this device is activated, Diviora shows only the **Activation** screen; the player (Consumer Deck) opens after activation.
 2. Enter your **licence key** (`DVL-…`) or **invite token** (`DVI-…`) and click **Activate Device Key**.
 3. You'll see "Activated … bound to this device until <date>".
 

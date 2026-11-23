@@ -22,6 +22,32 @@
 param([switch]$Verify, [switch]$Uninstall, [switch]$Diagnose, [string]$TestConfig, [switch]$ClearConfig, [switch]$Canary)
 $ErrorActionPreference = 'Stop'
 
+# Must run as a 64-bit process: a 32-bit PowerShell (e.g. started by the 32-bit Setup.exe)
+# sees the 32-bit registry view and "Program Files (x86)". Relaunch in 64-bit if needed.
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+    $ps64 = Join-Path $env:WINDIR 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
+    $fwd = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+    foreach ($k in $PSBoundParameters.Keys) {
+        $v = $PSBoundParameters[$k]
+        if ($v -is [System.Management.Automation.SwitchParameter]) { if ($v) { $fwd += "-$k" } } else { $fwd += "-$k"; $fwd += "$v" }
+    }
+    & $ps64 @fwd
+    exit $LASTEXITCODE
+}
+
+# Keep a log of every run (the Setup.exe shows only an exit code).
+$LogFile = Join-Path $env:ProgramData 'Diviora\install.log'
+try {
+    New-Item -ItemType Directory -Force -Path (Split-Path $LogFile) | Out-Null
+    Start-Transcript -Path $LogFile -Append -Force | Out-Null
+} catch {}
+trap {
+    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host $_.ScriptStackTrace
+    try { Stop-Transcript | Out-Null } catch {}
+    exit 1
+}
+
 # Two layouts: the installed app (all files next to this script, from the Setup.exe) or
 # the project folder (developer: windows-apo\build\Release).
 if (Test-Path (Join-Path $PSScriptRoot 'DivioraAPO.dll')) {

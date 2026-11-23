@@ -48,7 +48,7 @@ the sync service build, the server tests and the app unit tests.
 
 ## 3. Developer panel
 
-Open it with **Ctrl + Shift + D**, then sign in with the developer password.
+Open it with **Ctrl + Shift + D** (on a phone: tap the **DIVIORA** logo 7 times quickly), then sign in with the developer password. Press the shortcut again to close it and lock the developer session. Once unlocked, the developer can also use the player without a consumer licence.
 
 - **First use:** click **Reset Password**, leave *Current password* empty, and choose a password
   (at least 10 characters, three character types). A **recovery key** is shown **once**. Store it

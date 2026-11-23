@@ -8,6 +8,21 @@ use crate::playback::manager::{PlaybackManager, PlaybackStatus};
 use crate::drop::scan::FileSystemScanner;
 use crate::security::SecurityManager;
 
+/// Set once the developer has unlocked the developer panel in this session.
+static DEVELOPER_UNLOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The player is for activated devices (and the developer). The UI hides it too; this is the
+/// check that counts.
+fn require_access() -> Result<(), String> {
+    if DEVELOPER_UNLOCKED.load(std::sync::atomic::Ordering::Relaxed)
+        || diviora_client::state::ClientState::load().is_activated()
+    {
+        Ok(())
+    } else {
+        Err("This device is not activated. Enter your licence key or invite token first.".into())
+    }
+}
+
 #[tauri::command]
 pub fn detect_audio_hardware_devices() -> Result<Vec<String>, String> {
     Ok(vec![
@@ -230,6 +245,7 @@ pub fn analyze_apo_profile(sample_rate: Option<u32>, channels: Option<u32>, devi
 
 #[tauri::command]
 pub fn set_native_track_path(path: String, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+    require_access()?;
     let mgr = manager.inner();
     let mutex_lock = mgr.lock().unwrap();
     if let Ok(mut track_guard) = mutex_lock.current_track_path.lock() {
@@ -240,6 +256,9 @@ pub fn set_native_track_path(path: String, manager: State<'_, Arc<Mutex<Playback
 
 #[tauri::command]
 pub fn trigger_hardware_audio_playback(start: bool, _handle: AppHandle, manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+    if start {
+        require_access()?;
+    }
     let mgr = manager.inner().lock().unwrap();
     if start {
         let path_str = mgr.current_track_path.lock().unwrap().clone();
@@ -279,7 +298,32 @@ pub fn reset_client_token() -> Result<String, String> {
 
 #[tauri::command]
 pub fn verify_master_password(password: String) -> Result<bool, String> {
-    SecurityManager::verify_master_pass(&password)
+    let ok = SecurityManager::verify_master_pass(&password)?;
+    if ok {
+        DEVELOPER_UNLOCKED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(ok)
+}
+
+/// Developer panel closed (Ctrl+Shift+D again): drop the developer's access for this session.
+#[tauri::command]
+pub fn lock_developer_session() {
+    DEVELOPER_UNLOCKED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Licence state of this device, for the activation screen and the licence card.
+#[tauri::command]
+pub fn licence_status() -> serde_json::Value {
+    let st = diviora_client::state::ClientState::load();
+    let until = chrono::DateTime::from_timestamp(st.licence_expires_at, 0)
+        .map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+    serde_json::json!({
+        "activated": st.is_activated(),
+        "licence_key": st.license_key,
+        "expires": if st.licence_expires_at > 0 { until } else { String::new() },
+        "offline": st.session == "offline",
+        "developer": DEVELOPER_UNLOCKED.load(std::sync::atomic::Ordering::Relaxed),
+    })
 }
 
 #[tauri::command]
@@ -319,6 +363,7 @@ pub fn sync_project_to_github(commit_msg: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn export_processed_audio_file(source_path: String, _manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
+    require_access()?;
     let (mut samples, sr, ch) = decode_audio_file(&source_path)?;
     let payload = effective_config().unwrap_or_default();
     let stages = diviora_dsp::analysis::process_file_samples(&payload, &mut samples, sr, ch as usize);
@@ -628,7 +673,11 @@ pub fn authenticate_user_session(user_id: String, hwid: String) -> Result<String
     let mut st = diviora_client::state::ClientState::load();
     let Some(url) = diviora_client::state::server_url(&st) else {
         SecurityManager::verify_session_exclusivity(&key, &device)?;
-        return Ok("Activated on this device (offline mode: no licence server configured).".to_string());
+        st.license_key = key;
+        st.device_id = device;
+        st.session = "offline".into();
+        st.save()?;
+        return Ok("Activated on this device (test mode: no licence server is configured, so the key is not checked online).".to_string());
     };
     let session = if key.starts_with("DVI-") {
         diviora_client::server::redeem_invite(&url, &key, &device)?
@@ -707,6 +756,7 @@ pub fn verify_watermark_presence(manager: State<'_, Arc<Mutex<PlaybackManager>>>
 /// body and the file name in the `x-file-name` header (URI-encoded).
 #[tauri::command]
 pub fn import_track(request: tauri::ipc::Request<'_>) -> Result<crate::library::Track, String> {
+    require_access()?;
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("Expected the file contents as raw bytes.".into());
     };

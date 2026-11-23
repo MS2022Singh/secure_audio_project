@@ -16,7 +16,7 @@ Test builds aren't code-signed: on Windows click **More info → Run anyway** if
 
 | # | Requirement | Steps | Expected |
 |---|---|---|---|
-| A1 | One installer, no extra apps | Run `Diviora-Psychoacoustics_…_x64-setup.exe` and accept the administrator prompt | It shows the licence page, installs without asking for VB-Cable or anything else, and asks to restart at the end |
+| A1 | One installer, no extra apps | Run `Diviora-Setup-windows-x64.exe` and accept the administrator prompt | It shows the licence page, installs without asking for VB-Cable or anything else, and asks to restart at the end. If it reports a problem, send `C:\ProgramData\Diviora\install.log` |
 | A2 | Native audio unharmed | After the restart, play YouTube in Chrome | Sound is normal (no config yet, so pass-through) |
 | A3 | Diviora is inside Windows audio | Administrator PowerShell: `powershell -ExecutionPolicy Bypass -File "C:\Program Files\Diviora Psychoacoustics\apo\install_native_apo.ps1" -Diagnose` while YouTube plays | `[4]` lists `DivioraAPO.dll`; `[5]` shows `"process":"AUDIODG.EXE"` and `process_calls` rising |
 | A4 | Config changes **all** system audio | Same folder: `... install_native_apo.ps1 -TestConfig "Preamp: -24 dB"` while YouTube plays | YouTube gets much quieter within about 1 s; Spotify or other apps too |
@@ -28,8 +28,8 @@ Test builds aren't code-signed: on Windows click **More info → Run anyway** if
 
 | # | Requirement | Steps | Expected |
 |---|---|---|---|
-| B1 | Hidden from users | Open Diviora normally | Only **Consumer Deck** is visible |
-| B2 | Hidden shortcut | Press **Ctrl + Shift + D** | **Master Security** appears and asks for a password |
+| B1 | Activation first, developer hidden | Open Diviora on a device that is not activated | Only **Activation** is shown; no player and no developer panel. After entering a key (test mode accepts any key while no licence server is configured) the **Consumer Deck** with the player and a **Licence** card opens |
+| B2 | Hidden shortcut | Press **Ctrl + Shift + D** (phone: tap the DIVIORA logo 7 times) | **Master Security** appears and asks for a password |
 | B3 | No default password | Try `admin123` and `diviora2026` | Both rejected ("No developer password is set yet" on a fresh install) |
 | B4 | First password + recovery key | **Reset Password**, leave the current password empty, enter a new one (10+ characters, mixed) | A recovery key `DVR-…` is shown once. Write it down |
 | B5 | Lockout | Enter a wrong password 5 times | "Too many attempts" for 60 s |
@@ -80,7 +80,7 @@ which needs the server reachable from both; the single-PC tests (D3–D5) work w
 
 | # | Requirement | Steps | Expected |
 |---|---|---|---|
-| F1 | Install | Copy `app-universal-debug.apk` to the phone, open it, and allow "install unknown apps" | Diviora installs and opens |
+| F1 | Install | Download `Diviora-android-arm64-test.apk` on the phone, open it, and allow "install unknown apps" | Diviora installs and opens |
 | F2 | Activation | Enter a licence key or invite (internet needed once) | "Activated … bound to this device" |
 | F3 | Config + watermark applied | After activation (wait up to 5 min for the first sync), import a song and play it | It sounds processed by the developer's configuration |
 | F4 | Save processed | **Download Processed Audio** | A `…_DIVIORA_PROCESSED.wav` appears in the playlist; C4/C5-style detection works on it |

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>DIVIORA PSYCHOACOUSTICS</title>
     <style>
         :root {
@@ -64,17 +65,36 @@
         .est-value { color: #fff; font-weight: bold; font-family: monospace; }
 
         .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.75); display: none; align-items: center; justify-content: center; z-index: 1000; }
+        .licence-line { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+        .licence-line b { color: #fff; }
+        /* Phones: sidebar becomes a top bar, cards use the full width. */
+        @media (max-width: 760px) {
+            body { flex-direction: column; height: auto; min-height: 100vh; overflow: auto; }
+            .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border-color); padding: 12px 16px; }
+            .logo { margin-bottom: 10px; }
+            .sidebar-playlist { margin-top: 8px; }
+            .playlist-content { max-height: 200px; }
+            .main-content { overflow: visible !important; padding: 16px; }
+            .workspace-plane { max-width: 100%; }
+            .card { padding: 16px !important; }
+            h1 { font-size: 20px !important; }
+            .modal-card { width: calc(100vw - 32px); box-sizing: border-box; }
+            button { white-space: normal; }
+            .card div[style*="display: flex"] { flex-wrap: wrap; }
+            #btnExportProcessedTrack { margin-left: 0 !important; width: 100%; }
+        }
         .modal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 12px; padding: 28px; width: 440px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8); }
     </style>
 </head>
 <body>
     <!-- LEFT SIDEBAR -->
     <div class="sidebar">
-        <div class="logo">🧬 DIVIORA</div>
-        <div class="nav-item active" id="menuConsumer" onclick="switchPanelView('consumer')">🎵 Consumer Deck</div>
+        <div class="logo" id="lblAppLogo" style="user-select: none;">🧬 DIVIORA</div>
+        <div class="nav-item active" id="menuActivation" onclick="switchPanelView('activation')">🔑 Activation</div>
+        <div class="nav-item" id="menuConsumer" style="display: none;" onclick="switchPanelView('consumer')">🎵 Consumer Deck</div>
         <div class="nav-item" id="menuDeveloper" style="display: none;" onclick="switchPanelView('developer')">🛡️ Master Security</div>
 
-        <div class="sidebar-playlist">
+        <div class="sidebar-playlist" id="boxSidebarPlaylist" style="display: none;">
             <div class="playlist-title" id="btnTogglePlaylist">
                 <span id="lblPlaylistArrow">▼ PLAYLIST QUEUE</span>
                 <span id="lblQueueCount">0 Tracks</span>
@@ -111,11 +131,23 @@
                 </div>
 
                 <div class="card">
+                    <h3 style="margin: 0 0 12px 0;">🔑 Licence</h3>
+                    <div class="licence-line" id="lblLicenceSummary">Checking licence…</div>
+                    <div style="display: flex; gap: 10px; margin-top: 14px;">
+                        <button id="btnConsumerResetPassword" class="btn-dark">Reset Client Token</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ACTIVATION (first screen until this device is activated) -->
+            <div id="panelActivationView" style="display: flex; flex-direction: column; gap: 20px;">
+                <h1 style="margin:0 0 10px 0; font-size: 26px;">ACTIVATE DIVIORA</h1>
+                <div class="card" style="max-width: 560px;">
                     <h3 style="margin: 0 0 12px 0;">🔑 Consumer Activation Gateway</h3>
+                    <p style="font-size: 13px; color: var(--text-muted); margin: 0 0 14px 0; line-height: 1.5;">Enter the licence key (DVL-…) or invite token (DVI-…) you received from Diviora. One licence works on one device. After activation the player opens, and the developer's sound profile and updates are applied automatically.</p>
                     <input type="text" id="txtConsumerUserId" placeholder="Enter Client License Serial Key" style="max-width: 420px; margin-bottom: 14px;" />
                     <div style="display: flex; gap: 10px;">
                         <button class="btn-green" id="btnActivateKey">Activate Device Key</button>
-                        <button id="btnConsumerResetPassword" class="btn-dark">Reset Client Token</button>
                     </div>
                     <div id="lblActivationStatus" style="margin-top: 10px; font-size: 13px;"></div>
                 </div>
@@ -409,13 +441,46 @@
         let playlistQueue = [];
         let activeTrackIndex = 0;
 
+        // Access: the player needs an activated device (or the unlocked developer).
+        let licenceInfo = { activated: false };
+        function hasPlayerAccess() { return licenceInfo.activated || isMasterAuthenticated; }
+
+        async function refreshLicenceState(goTo) {
+            try { licenceInfo = await invokeCmd('licence_status'); } catch (e) { licenceInfo = { activated: false }; }
+            const access = hasPlayerAccess();
+            document.getElementById('menuConsumer').style.display = access ? 'flex' : 'none';
+            document.getElementById('boxSidebarPlaylist').style.display = access ? 'flex' : 'none';
+            document.getElementById('menuActivation').style.display = licenceInfo.activated ? 'none' : 'flex';
+            const sum = document.getElementById('lblLicenceSummary');
+            if (licenceInfo.activated) {
+                sum.innerHTML = `Licence <b>${licenceInfo.licence_key}</b> is active on this device` +
+                    (licenceInfo.expires ? ` until <b>${licenceInfo.expires}</b>` : '') + '.' +
+                    (licenceInfo.offline ? '<br>Test mode: no licence server is configured, so the key was not checked online.' : '<br>Sound profile updates from the developer are applied automatically.');
+            } else if (isMasterAuthenticated) {
+                sum.innerHTML = 'Developer access (this device is not activated with a consumer licence).';
+            }
+            if (goTo) switchPanelView(goTo);
+            else if (!access && currentView === 'consumer') switchPanelView('activation');
+            else if (licenceInfo.activated && currentView === 'activation') switchPanelView('consumer');
+            if (access) loadLibraryIntoPlaylist();
+        }
+
+        let currentView = 'activation';
         function switchPanelView(p) {
+            if (p === 'consumer' && !hasPlayerAccess()) p = 'activation';
+            currentView = p;
+            document.getElementById('panelActivationView').style.display = p === 'activation' ? 'flex' : 'none';
+            document.getElementById('menuActivation').className = p === 'activation' ? 'nav-item active' : 'nav-item';
             document.getElementById('panelConsumerView').style.display = p === 'consumer' ? 'flex' : 'none';
             document.getElementById('panelMasterLoginView').style.display = (p === 'developer' && !isMasterAuthenticated) ? 'flex' : 'none';
             document.getElementById('panelDeveloperView').style.display = (p === 'developer' && isMasterAuthenticated) ? 'flex' : 'none';
             document.getElementById('menuConsumer').className = p === 'consumer' ? 'nav-item active' : 'nav-item';
             document.getElementById('menuDeveloper').className = p === 'developer' ? 'nav-item active' : 'nav-item';
         }
+        window.addEventListener('DOMContentLoaded', async () => {
+            await refreshLicenceState();
+            switchPanelView(hasPlayerAccess() ? 'consumer' : 'activation');
+        });
 
         function toggleCustomChannelInput() {
             const sel = document.getElementById('selChannelConfig').value;
@@ -450,14 +515,29 @@
             } catch (e) {}
         });
 
-        // Stealth Hotkey (Ctrl + Shift + D)
-        window.addEventListener('keydown', (e) => {
-            if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
-                isDevPanelRevealed = !isDevPanelRevealed;
-                if (!isDevPanelRevealed) isMasterAuthenticated = false;
-                document.getElementById('menuDeveloper').style.display = isDevPanelRevealed ? 'flex' : 'none';
-                switchPanelView(isDevPanelRevealed ? 'developer' : 'consumer');
+        // Hidden developer access: Ctrl + Shift + D, or tap the DIVIORA logo 7 times (phones).
+        function toggleDeveloperAccess() {
+            isDevPanelRevealed = !isDevPanelRevealed;
+            if (!isDevPanelRevealed && isMasterAuthenticated) {
+                isMasterAuthenticated = false;
+                invokeCmd('lock_developer_session').catch(() => {});
             }
+            document.getElementById('menuDeveloper').style.display = isDevPanelRevealed ? 'flex' : 'none';
+            if (isDevPanelRevealed) switchPanelView('developer');
+            else refreshLicenceState().then(() => switchPanelView(hasPlayerAccess() ? 'consumer' : 'activation'));
+        }
+        window.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd' || e.code === 'KeyD')) {
+                e.preventDefault();
+                toggleDeveloperAccess();
+            }
+        }, true);
+        let logoTaps = 0, logoTapTimer = null;
+        document.getElementById('lblAppLogo').addEventListener('click', () => {
+            logoTaps++;
+            clearTimeout(logoTapTimer);
+            logoTapTimer = setTimeout(() => { logoTaps = 0; }, 1500);
+            if (logoTaps >= 7) { logoTaps = 0; toggleDeveloperAccess(); }
         });
 
         // Apply Analysis Settings: refresh the measured properties for the chosen device/channel.
@@ -509,7 +589,10 @@
                 document.getElementById('lblClientResetStatus').style.color = "var(--primary-green)";
                 document.getElementById('lblClientResetStatus').innerText = "✔ " + res;
                 document.getElementById('lblActivationStatus').innerText = "Machine token reset.";
-                setTimeout(() => { document.getElementById('modalClientResetOverlay').style.display = 'none'; }, 1500);
+                setTimeout(() => {
+                    document.getElementById('modalClientResetOverlay').style.display = 'none';
+                    refreshLicenceState();
+                }, 1500);
             } catch (err) {
                 document.getElementById('lblClientResetStatus').style.color = "var(--error-red)";
                 document.getElementById('lblClientResetStatus').innerText = "✖ " + err;
@@ -550,7 +633,7 @@
                 if (ok) {
                     isMasterAuthenticated = true;
                     document.getElementById('lblMasterAuthError').innerText = "";
-                    switchPanelView('developer');
+                    refreshLicenceState('developer');
                 } else {
                     document.getElementById('lblMasterAuthError').innerText = "Invalid Access Token";
                 }
@@ -606,7 +689,7 @@
                 renderPlaylistUI();
             } catch (e) {}
         }
-        window.addEventListener('DOMContentLoaded', loadLibraryIntoPlaylist);
+
 
         document.getElementById('mediaFileInput').addEventListener('change', async (e) => {
             const files = Array.from(e.target.files); if (!files.length) return;
@@ -896,6 +979,7 @@
                 const res = await invokeCmd('authenticate_user_session', { userId: key, hwid: hwid });
                 document.getElementById('lblActivationStatus').style.color = "var(--primary-green)";
                 document.getElementById('lblActivationStatus').innerText = "✔ " + res + " (HWID: " + hwid + ")";
+                setTimeout(() => refreshLicenceState('consumer'), 1200);
             } catch (err) {
                 document.getElementById('lblActivationStatus').style.color = "var(--error-red)";
                 document.getElementById('lblActivationStatus').innerText = "✖ " + err;
