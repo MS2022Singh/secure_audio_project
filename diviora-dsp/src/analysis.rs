@@ -205,3 +205,97 @@ mod analyze_with_tests {
         assert_eq!(analyze(cfg, 48000, 2, None).stages, all.stages);
     }
 }
+
+/// What a configuration audibly does, measured by running test noise through the compiled
+/// engine (privacy-safe: reports only these numbers, never the configuration).
+#[derive(Debug, Clone)]
+pub struct Effect {
+    /// Output level relative to input, per output channel (dB).
+    pub level_change_db: Vec<f64>,
+    /// Largest difference in gain between frequency bands (50 Hz – 16 kHz), any channel (dB).
+    pub tonal_range_db: f64,
+    /// Correlation of the first two output channels for independent inputs (0 = none,
+    /// 1 = identical): shows crossfeed / channel mixing.
+    pub channel_mixing: f64,
+    pub stages: usize,
+}
+
+pub fn measure_effect(text: &str, sample_rate: u32, channels: usize, device: Option<&str>) -> Effect {
+    use realfft::RealFftPlanner;
+    let ch = channels.clamp(1, eqapo::MAX_CHANNELS);
+    let ctx = eqapo::Context { sample_rate, channels: ch, device_name: device.unwrap_or("").to_string(), ..Default::default() };
+    let cfg = eqapo::parse_with(text, None, &ctx);
+    let stages = match device {
+        Some(d) if !d.is_empty() => cfg.stages_for_device(d),
+        _ => cfg.stages_for_all_devices(),
+    };
+    let mut engine = Engine::compile(&stages, sample_rate, ch, 0);
+    // 4 s of independent white noise per channel (deterministic), at -20 dBFS RMS.
+    let frames = sample_rate as usize * 4;
+    let mut seed: u64 = 0x9E3779B97F4A7C15;
+    let mut rnd = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; ((seed >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0 };
+    let input: Vec<f32> = (0..frames * ch).map(|_| (rnd() * 0.1 * 3f64.sqrt()) as f32).collect();
+    let mut out = input.clone();
+    engine.process_interleaved(&mut out);
+    // Skip the first second (delays, filters and FIR latency settle).
+    let skip = sample_rate as usize;
+    let chan = |buf: &[f32], c: usize| -> Vec<f64> { buf.iter().skip(skip * ch + c).step_by(ch).map(|v| *v as f64).collect() };
+    let rms = |v: &[f64]| (v.iter().map(|x| x * x).sum::<f64>() / v.len().max(1) as f64).sqrt();
+    let n = 8192usize;
+    let fft = RealFftPlanner::<f64>::new().plan_fft_forward(n);
+    let bands: Vec<(f64, f64)> = (0..20).map(|i| {
+        let lo = 50.0 * (16000.0f64 / 50.0).powf(i as f64 / 20.0);
+        let hi = 50.0 * (16000.0f64 / 50.0).powf((i + 1) as f64 / 20.0);
+        (lo, hi)
+    }).collect();
+    let band_energy = |x: &[f64]| -> Vec<f64> {
+        let mut e = vec![1e-30; bands.len()];
+        let mut buf = vec![0.0f64; n];
+        let mut spec = fft.make_output_vec();
+        for seg in x.chunks_exact(n) {
+            for (k, (b, v)) in buf.iter_mut().zip(seg).enumerate() {
+                let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * k as f64 / n as f64).cos();
+                *b = v * w;
+            }
+            let _ = fft.process(&mut buf, &mut spec);
+            for (bi, (lo, hi)) in bands.iter().enumerate() {
+                let (a, b) = ((lo * n as f64 / sample_rate as f64) as usize, (hi * n as f64 / sample_rate as f64) as usize);
+                for s in spec.iter().take(b.min(n / 2) + 1).skip(a.max(1)) { e[bi] += s.norm_sqr(); }
+            }
+        }
+        e
+    };
+    let mut level = Vec::new();
+    let mut tonal: f64 = 0.0;
+    for c in 0..ch {
+        let (i, o) = (chan(&input, c), chan(&out, c));
+        level.push(20.0 * (rms(&o).max(1e-12) / rms(&i).max(1e-12)).log10());
+        let (ei, eo) = (band_energy(&i), band_energy(&o));
+        let gains: Vec<f64> = ei.iter().zip(&eo).map(|(a, b)| 10.0 * (b / a).log10()).collect();
+        let (mn, mx) = gains.iter().fold((f64::MAX, f64::MIN), |(a, b), g| (a.min(*g), b.max(*g)));
+        if mx > mn { tonal = tonal.max(mx - mn); }
+    }
+    let mixing = if ch >= 2 {
+        let (a, b) = (chan(&out, 0), chan(&out, 1));
+        let (ma, mb) = (a.iter().sum::<f64>() / a.len() as f64, b.iter().sum::<f64>() / b.len() as f64);
+        let cov: f64 = a.iter().zip(&b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+        let va: f64 = a.iter().map(|x| (x - ma).powi(2)).sum();
+        let vb: f64 = b.iter().map(|y| (y - mb).powi(2)).sum();
+        if va > 0.0 && vb > 0.0 { cov / (va * vb).sqrt() } else { 0.0 }
+    } else { 0.0 };
+    Effect { level_change_db: level, tonal_range_db: tonal, channel_mixing: mixing, stages: stages.len() }
+}
+
+#[cfg(test)]
+mod effect_tests {
+    use super::*;
+
+    #[test]
+    fn measures_level_tone_and_mixing() {
+        let none = measure_effect("", 48000, 2, None);
+        assert!(none.level_change_db.iter().all(|d| d.abs() < 0.01) && none.tonal_range_db < 0.5 && none.channel_mixing.abs() < 0.05);
+        let e = measure_effect("Preamp: -6 dB\nFilter: ON PK Fc 1000 Hz Gain 9 dB Q 1\nCopy: L=0.7*L+0.3*R R=0.7*R+0.3*L", 48000, 2, None);
+        assert!(e.tonal_range_db > 6.0, "{:?}", e);
+        assert!(e.channel_mixing > 0.5, "{:?}", e);
+    }
+}

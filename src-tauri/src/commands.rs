@@ -75,10 +75,24 @@ fn compose_apo_payload() -> String {
 }
 
 /// Re-write the locked config if Lock Config has been pressed (or a locked file exists).
+/// One line describing what a configuration does to a test sound, as Diviora runs it.
+fn effect_line(text: &str, device: &str, channels: usize) -> String {
+    let e = diviora_dsp::analysis::measure_effect(text, 48000, channels.max(2), if device.is_empty() { None } else { Some(device) });
+    let names = ["L", "R", "C", "SUB", "RL", "RR", "SL", "SR"];
+    let levels: Vec<String> = e.level_change_db.iter().take(8).enumerate()
+        .map(|(i, d)| format!("{} {:+.1} dB", names.get(i).unwrap_or(&"?"), d)).collect();
+    let small = e.level_change_db.iter().all(|d| d.abs() < 0.5) && e.tonal_range_db < 1.0 && e.channel_mixing.abs() < 0.05;
+    format!("Measured effect on a test sound ({} stages): level {}; tone varies by {:.1} dB across frequencies; left/right mixing {:.2}.{}",
+        e.stages, levels.join(", "), e.tonal_range_db, e.channel_mixing,
+        if small { " This is almost no audible change." } else { "" })
+}
+
+/// After a developer setting changes: update the locked configuration only if that needs no
+/// administrator prompt (app running elevated). Otherwise the change is applied by the next
+/// Lock Config (one prompt), instead of a Windows prompt on every toggle.
 fn reapply_if_locked() -> Result<bool, String> {
     if *PROFILE_LOCKED.lock().unwrap() || crate::apo_config::config_path().exists() {
-        crate::apo_config::write_locked_config_elevated(&compose_apo_payload())?;
-        return Ok(true);
+        return Ok(crate::apo_config::write_locked_config(&compose_apo_payload()).is_ok());
     }
     Ok(false)
 }
@@ -240,6 +254,7 @@ pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: Stat
         summary.stages.len(), for_speakers, speakers,
         if locked { ", applied system-wide" } else { "; press Lock Config to apply system-wide" }
     );
+    msg.push_str(&format!(" {}", effect_line(&profile_data, &speakers, 2)));
     if !selectors.is_empty() && !selectors.iter().any(|d| d.matches(&speakers)) {
         msg.push_str(&format!(" WARNING: its Device: lines ({}) do not match \"{}\", so those parts will not be applied to these speakers. Change the Device: line to match, or use \"Device: all\".",
             selectors.iter().filter_map(|d| match d { diviora_dsp::eqapo::DeviceSel::Matching(p) => Some(p.join("; ")), _ => None }).collect::<Vec<_>>().join(" | "),
@@ -660,6 +675,8 @@ pub async fn verify_system_audio() -> Result<serde_json::Value, String> {
         } else {
             "✖ Configuration: the system-wide engine is not running in Windows audio (see the status line; try Restart Windows Audio).".into()
         });
+        let engine_dev = after.as_ref().and_then(|s| s.get("device")).and_then(|d| d.as_str()).unwrap_or("").to_string();
+        lines.push(format!("ℹ {}", effect_line(&payload, if engine_dev.is_empty() { &device } else { &engine_dev }, ch)));
         lines.push(match &watermark {
             Some(w) if w["detected"].as_bool() == Some(true) =>
                 format!("✔ Watermark \"{}\" at {} Hz found in the speakers' output (score {:.2}).", w["expected_id"].as_str().unwrap_or(""), w["carrier_hz"], w["score"].as_f64().unwrap_or(0.0)),
