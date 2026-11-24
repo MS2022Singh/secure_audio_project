@@ -23,6 +23,10 @@ struct DivioraCounters {
     std::atomic<LONG>     last_sample_rate{0};
     std::atomic<LONG>     last_channels{0};
     std::atomic<LONG>     non_float_streams{0};
+    std::atomic<LONG>     active_stages{-1};    // stages the last compiled engine runs (-1 = none compiled)
+    std::atomic<LONG>     config_warnings{0};   // lines of the config the engine could not convert
+    std::mutex            device_mutex;
+    std::wstring          last_device;          // device string the last engine was compiled for
 };
 
 DivioraCounters& DivioraStats();

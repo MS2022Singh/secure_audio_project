@@ -187,16 +187,28 @@ void ConfigManager::WriteStatus() {
     bool hasConfig;
     { std::lock_guard<std::mutex> g(m_mutex); hasConfig = !m_text.empty(); }
 
-    char json[1200];
+    std::string device;
+    {
+        std::lock_guard<std::mutex> g(st.device_mutex);
+        for (char c : Narrow(st.last_device)) {
+            if (c == '"' || c == '\\') device += '\\';
+            if (static_cast<unsigned char>(c) >= 0x20) device += c;
+        }
+        if (device.size() > 300) device.resize(300);
+    }
+
+    char json[1800];
     int n = snprintf(json, sizeof(json),
         "{\"writer\":\"DivioraAPO.dll\",\"pid\":%lu,\"process\":\"%s\",\"tick_ms\":%llu,"
         "\"instances\":%ld,\"locked\":%ld,\"process_calls\":%lld,\"processed_frames\":%lld,"
         "\"filtered_frames\":%lld,\"sample_rate\":%ld,\"channels\":%ld,\"non_float_streams\":%ld,"
-        "\"config_revision\":%lld,\"config_loaded\":%s,\"last_error\":\"%s\",\"status_dir_error\":%lu}\n",
+        "\"config_revision\":%lld,\"config_loaded\":%s,\"last_error\":\"%s\",\"status_dir_error\":%lu,"
+        "\"active_stages\":%ld,\"config_warnings\":%ld,\"device\":\"%s\"}\n",
         GetCurrentProcessId(), Narrow(exeName).c_str(), GetTickCount64(),
         st.instances.load(), st.locked.load(), st.process_calls.load(), st.processed_frames.load(),
         st.filtered_frames.load(), st.last_sample_rate.load(), st.last_channels.load(), st.non_float_streams.load(),
-        m_revision, hasConfig ? "true" : "false", Narrow(m_lastError).c_str(), m_statusWriteError);
+        m_revision, hasConfig ? "true" : "false", Narrow(m_lastError).c_str(), m_statusWriteError,
+        st.active_stages.load(), st.config_warnings.load(), device.c_str());
     if (n <= 0) return;
 
     auto writeAtomically = [&](const std::wstring& path) -> DWORD {

@@ -15,6 +15,10 @@ static void FreeEngine(DvrEngine* e) {
 // avoid needing INITGUID for functiondiscoverykeys_devpkey.h).
 static const PROPERTYKEY kPkeyDeviceFriendlyName =
     { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
+// PKEY_AudioEndpoint_GUID {1da5d803-d492-4edd-8c23-e0c0ffee7f0e},4: the endpoint's GUID, which
+// Equalizer APO's "Device:" lines usually contain.
+static const PROPERTYKEY kPkeyAudioEndpointGuid =
+    { { 0x1da5d803, 0xd492, 0x4edd, { 0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e } }, 4 };
 
 // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {00000003-0000-0010-8000-00aa00389b71}
 static const GUID kSubtypeIeeeFloat =
@@ -115,6 +119,14 @@ STDMETHODIMP DivioraAPO::Initialize(UINT32 cbDataSize, BYTE* pbyData) {
             if (SUCCEEDED(init->pAPOEndpointProperties->GetValue(kPkeyDeviceFriendlyName, &v)) &&
                 v.vt == VT_LPWSTR && v.pwszVal) {
                 m_deviceName = v.pwszVal;
+            }
+            PropVariantClear(&v);
+            PropVariantInit(&v);
+            if (SUCCEEDED(init->pAPOEndpointProperties->GetValue(kPkeyAudioEndpointGuid, &v)) &&
+                v.vt == VT_LPWSTR && v.pwszVal) {
+                // "Speakers (Realtek(R) Audio) {guid}": name and GUID, like Equalizer APO matches.
+                m_deviceName += L" ";
+                m_deviceName += v.pwszVal;
             }
             PropVariantClear(&v);
         }
@@ -282,9 +294,15 @@ STDMETHODIMP DivioraAPO::GetEffectsList(LPGUID* ppEffectsIds, UINT* pcEffects, H
 // ---------------- Config hand-off (control thread, ConfigManager mutex held) ----------------
 DvrEngine* DivioraAPO::Compile(const std::string& text) const {
     if (text.empty()) return kBypassEngine;
+    uint32_t stages = 0, warnings = 0;
     DvrEngine* e = dvr_engine_create(reinterpret_cast<const uint8_t*>(text.data()), text.size(),
                                      m_deviceName.empty() ? nullptr : reinterpret_cast<const uint16_t*>(m_deviceName.c_str()),
-                                     m_sampleRate, m_channels, nullptr, nullptr);
+                                     m_sampleRate, m_channels, &stages, &warnings);
+    auto& st = DivioraStats();
+    st.active_stages = e ? static_cast<LONG>(stages) : 0;
+    st.config_warnings = static_cast<LONG>(warnings);
+    { std::lock_guard<std::mutex> g(st.device_mutex); st.last_device = m_deviceName; }
+    DvrLog(L"Compile: device='%s' rate=%u ch=%u stages=%u warnings=%u", m_deviceName.c_str(), m_sampleRate, m_channels, stages, warnings);
     return e ? e : kBypassEngine;
 }
 

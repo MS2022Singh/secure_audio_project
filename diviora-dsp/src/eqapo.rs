@@ -138,14 +138,59 @@ pub enum DeviceSel {
 }
 
 impl DeviceSel {
-    pub fn matches(&self, device_name: &str) -> bool {
+    /// `device` is the output's device string: its name ("Speakers (Realtek(R) Audio)") and,
+    /// where known, its endpoint GUID. Like Equalizer APO, a `Device:` pattern (for example
+    /// "Realtek(R) Audio Speakers {4134526c-...}", as its editor writes them) matches when
+    /// every word of it occurs in the device string (any order, case-insensitive, `*` = any).
+    pub fn matches(&self, device: &str) -> bool {
         match self {
             DeviceSel::All => true,
-            DeviceSel::Matching(pats) => {
-                let d = device_name.to_lowercase();
-                pats.iter().any(|p| d.contains(&p.to_lowercase()))
-            }
+            DeviceSel::Matching(pats) => pats.iter().any(|p| device_pattern_matches(p, device)),
         }
+    }
+}
+
+fn device_words(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ',' || c == ';')
+        .map(|w| w.trim_matches(|c: char| c == '*' || c == '"').to_string())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+fn device_pattern_matches(pattern: &str, device: &str) -> bool {
+    let d = device.to_lowercase();
+    let p = pattern.trim().to_lowercase();
+    if p.is_empty() || p == "all" || p == "*" {
+        return true;
+    }
+    if d.contains(&p) {
+        return true;
+    }
+    let dev_words = device_words(device);
+    let pat_words = device_words(pattern);
+    !pat_words.is_empty()
+        && pat_words.iter().all(|w| {
+            // "2- Realtek(R)" style prefixes Windows adds to duplicate names are ignored.
+            dev_words.iter().any(|dw| dw == w || dw.contains(w.as_str()))
+                || (w.ends_with('-') && w[..w.len() - 1].chars().all(|c| c.is_ascii_digit()))
+        })
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+
+    #[test]
+    fn equalizer_apo_device_strings_match() {
+        let dev = "Speakers (2- Realtek(R) Audio) {4134526c-7b35-49cd-b0a0-4c58c090de43}";
+        let m = |p: &str| DeviceSel::Matching(vec![p.to_string()]).matches(dev);
+        assert!(m("Realtek(R) Audio Speakers {4134526c-7b35-49cd-b0a0-4c58c090de43}"));
+        assert!(m("Speakers Realtek"));
+        assert!(m("{4134526C-7B35-49CD-B0A0-4C58C090DE43}"));
+        assert!(m("Speakers*"));
+        assert!(!m("Headphones"));
+        assert!(!m("Realtek(R) Audio Speakers {00000000-0000-0000-0000-000000000000}"));
     }
 }
 

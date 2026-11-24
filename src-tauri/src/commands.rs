@@ -227,14 +227,24 @@ pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: Stat
         return Ok("Equalizer disabled (pass-through).".to_string());
     }
     let summary = diviora_dsp::eqapo::parse(&profile_data, None);
+    // Device: blocks only apply to matching outputs (as in Equalizer APO): say whether they
+    // match the speakers this PC plays to right now.
+    let speakers = crate::playback::manager::default_output_name();
+    let for_speakers = summary.stages_for_device(&speakers).len();
+    let selectors = summary.device_selectors();
     *STAGED_PROFILE.lock().unwrap() = Some(profile_data.clone());
     *EQ_ENABLED.lock().unwrap() = true;
     let locked = reapply_if_locked()?;
     let mut msg = format!(
-        "Profile staged in memory: {} processing stage(s){}.",
-        summary.stages.len(),
+        "Profile staged in memory: {} processing stage(s), {} of them for your current output \"{}\"{}.",
+        summary.stages.len(), for_speakers, speakers,
         if locked { ", applied system-wide" } else { "; press Lock Config to apply system-wide" }
     );
+    if !selectors.is_empty() && !selectors.iter().any(|d| d.matches(&speakers)) {
+        msg.push_str(&format!(" WARNING: its Device: lines ({}) do not match \"{}\", so those parts will not be applied to these speakers. Change the Device: line to match, or use \"Device: all\".",
+            selectors.iter().filter_map(|d| match d { diviora_dsp::eqapo::DeviceSel::Matching(p) => Some(p.join("; ")), _ => None }).collect::<Vec<_>>().join(" | "),
+            speakers));
+    }
     if !summary.warnings.is_empty() {
         msg.push_str(&format!("\n{} line(s) not supported:\n{}", summary.warnings.len(),
             summary.warnings.iter().map(|w| format!("• {}", w)).collect::<Vec<_>>().join("\n")));
@@ -640,6 +650,9 @@ pub async fn verify_system_audio() -> Result<serde_json::Value, String> {
         }
         lines.push(if active && frames_during > 0 && config_loaded {
             format!("✔ Configuration: the Diviora engine in Windows audio processed this sound with the locked configuration ({} frames during the test).", frames_during)
+        } else if active && config_loaded && status_num(&after, "active_stages") == 0 {
+            format!("✖ Configuration: the locked configuration is loaded, but none of it applies to these speakers (\"{}\"): its Device: lines name another output. Change them to match, or use \"Device: all\".",
+                after.as_ref().and_then(|s| s.get("device")).and_then(|d| d.as_str()).unwrap_or(""))
         } else if active && config_loaded {
             "✖ Configuration: the engine is loaded with the locked configuration, but no audio passed through it during the test (is the music playing on the default speakers?).".into()
         } else if active {
@@ -844,6 +857,8 @@ pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
     let process = st.as_ref().and_then(|v| v.get("process")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let last_error = st.as_ref().and_then(|v| v.get("last_error")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let config_loaded = st.as_ref().and_then(|v| v.get("config_loaded")).and_then(|v| v.as_bool()).unwrap_or(false);
+    let active_stages = st.as_ref().and_then(|v| v.get("active_stages")).and_then(|v| v.as_i64()).unwrap_or(-1);
+    let engine_device = st.as_ref().and_then(|v| v.get("device")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let tick_ms = g("tick_ms");
     let pid = g("pid");
     let (process_calls, processed_frames, filtered_frames, locked) = (g("process_calls"), g("processed_frames"), g("filtered_frames"), g("locked"));
@@ -872,8 +887,13 @@ pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
     };
     let pid_str = if in_audiodg { pid.to_string() } else { "Offline".to_string() };
     let msg_str = match hook_status {
-        "ACTIVE" => format!("DivioraAPO in audiodg.exe | Locked config applied | Filtered frames: {}", filtered_frames),
-        "PASSTHROUGH_ACTIVE" => format!("DivioraAPO in audiodg.exe | Pass-through ({}) | Frames: {}", last_error, processed_frames),
+        "ACTIVE" => format!("DivioraAPO in audiodg.exe | Locked config applied ({} stages) | Filtered frames: {}",
+            if active_stages >= 0 { active_stages.to_string() } else { "?".into() }, filtered_frames),
+        "PASSTHROUGH_ACTIVE" if config_loaded && active_stages == 0 => format!(
+            "DivioraAPO in audiodg.exe | Locked config loaded, but NONE of it applies to \"{}\" (check its Device: lines) | Frames: {}",
+            engine_device, processed_frames),
+        "PASSTHROUGH_ACTIVE" => format!("DivioraAPO in audiodg.exe | Pass-through ({}) | Frames: {}",
+            if last_error.is_empty() && !config_loaded { "no locked configuration".to_string() } else { last_error.clone() }, processed_frames),
         "LOADED_IDLE" => "DivioraAPO loaded in audiodg.exe | Waiting for audio".to_string(),
         "BOUND_READY" => "Attached to the speakers, but Windows audio has not loaded it yet: click 'Restart Windows Audio', then play audio".to_string(),
         "REGISTERED_NOT_BOUND" => "Engine registered but NOT attached to the speakers (installation did not finish): click 'Install / Repair System-Wide APO'; details in C:\\ProgramData\\Diviora\\install.log".to_string(),
@@ -902,6 +922,8 @@ pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
         "processed_frames": processed_frames,
         "filtered_frames": filtered_frames,
         "loaded_revision": g("config_revision"),
+        "active_stages": active_stages,
+        "engine_device": engine_device,
         "format_valid": g("non_float_streams") == 0,
         "last_error": last_error,
         "status_tick_ms": tick_ms

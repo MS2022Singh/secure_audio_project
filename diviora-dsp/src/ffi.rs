@@ -51,7 +51,12 @@ pub extern "C" fn dvr_engine_create(
         let s = String::from_utf8_lossy(bytes);
         // If:/Eval:/backticks are evaluated for this exact stream (rate, channels, device).
         let dev = utf16_to_string(device_name).unwrap_or_default();
-        let ctx = eqapo::Context { sample_rate, channels: channels as usize, device_name: dev.clone(), ..Default::default() };
+        // "Speakers (Realtek(R) Audio) {guid}" -> name + GUID for If:/Eval: variables.
+        let (name, guid) = match dev.rfind(" {") {
+            Some(i) if dev.ends_with('}') => (dev[..i].to_string(), dev[i + 1..].to_string()),
+            _ => (dev.clone(), String::new()),
+        };
+        let ctx = eqapo::Context { sample_rate, channels: channels as usize, device_name: name, device_guid: guid, ..Default::default() };
         let cfg = eqapo::parse_with(&s, None, &ctx);
         let stages = if dev.is_empty() { cfg.stages_for_all_devices() } else { cfg.stages_for_device(&dev) };
         let n_stages = stages.len() as u32;
