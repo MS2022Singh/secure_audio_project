@@ -146,6 +146,8 @@ pub fn run() {
             commands::install_phone_update,
             commands::restart_windows_audio,
             commands::verify_system_audio,
+            commands::is_app_elevated,
+            commands::relaunch_as_admin,
             commands::import_track_b64,
             commands::change_developer_password,
             commands::app_version_info,
@@ -184,6 +186,9 @@ fn error_chain(e: &dyn std::error::Error) -> String {
 /// elevated helper behind Lock Config. Returns Some(exit code) if a mode ran.
 pub fn handle_cli() -> Option<i32> {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 2 && args[1] == "--remove-locked-config" {
+        return Some(apo_config::remove_locked_config_cli());
+    }
     if args.len() >= 3 && args[1] == "--apply-locked-config" {
         return Some(apo_config::apply_locked_config_from_file(std::path::Path::new(&args[2])));
     }

@@ -60,6 +60,31 @@ pub fn write_locked_config_elevated(text: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// Delete the locked configuration (Windows audio returns to pass-through within a second),
+/// asking for administrator permission if needed.
+pub fn remove_locked_config_elevated() -> Result<(), String> {
+    match imp::remove_locked_config() {
+        Ok(()) => Ok(()),
+        Err(e) if e.contains("denied") || e.contains("error 5") || e.contains("Administrator") => imp::remove_via_elevation(),
+        Err(e) => Err(e),
+    }
+}
+
+/// Delete the locked configuration with the current rights.
+pub fn remove_locked_config() -> Result<(), String> {
+    imp::remove_locked_config()
+}
+
+/// Can this process change the locked configuration without a Windows prompt?
+pub fn can_write_without_prompt() -> bool {
+    imp::can_write_without_prompt()
+}
+
+/// Entry point of the elevated helper: `app.exe --remove-locked-config`.
+pub fn remove_locked_config_cli() -> i32 {
+    if imp::remove_locked_config().is_ok() { 0 } else { 1 }
+}
+
 /// Entry point of the elevated helper: `app.exe --apply-locked-config <file>`.
 /// Returns the process exit code; the error text (if any) is written to `<file>.result`.
 pub fn apply_locked_config_from_file(path: &std::path::Path) -> i32 {
@@ -190,6 +215,45 @@ mod imp {
         }
     }
 
+    pub fn remove_locked_config() -> Result<(), String> {
+        let dir = base_dir();
+        for f in [config_path(), dir.join("config.dvr.tmp")] {
+            match std::fs::remove_file(&f) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    return Err(format!("cannot remove {}: access denied. Run Diviora as Administrator.", f.display()))
+                }
+                Err(e) => return Err(format!("cannot remove {}: {}", f.display(), e)),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn can_write_without_prompt() -> bool {
+        let probe = base_dir().join(".diviora_write_probe");
+        let ok = std::fs::write(&probe, b"x").is_ok();
+        let _ = std::fs::remove_file(&probe);
+        ok
+    }
+
+    pub fn remove_via_elevation() -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let ps = format!(
+            "try {{ $p = Start-Process -FilePath '{}' -ArgumentList '--remove-locked-config' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode }} catch {{ exit 1223 }}",
+            exe.display().to_string().replace('\'', "''"));
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+            .creation_flags_no_window()
+            .status();
+        match status.map(|s| s.code().unwrap_or(1)) {
+            Ok(0) => Ok(()),
+            Ok(1223) => Err("Administrator permission was not given (the Windows prompt was declined).".into()),
+            Ok(_) => Err("Removing the locked configuration failed.".into()),
+            Err(e) => Err(format!("could not ask for administrator permission: {}", e)),
+        }
+    }
+
     pub fn write_via_elevation(text: &str) -> Result<PathBuf, String> {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let mut rnd = [0u8; 8];
@@ -262,6 +326,15 @@ mod imp {
     }
     pub fn unprotect_user(_b: &[u8]) -> Result<String, String> {
         Err("Windows only".into())
+    }
+    pub fn remove_locked_config() -> Result<(), String> {
+        Ok(())
+    }
+    pub fn remove_via_elevation() -> Result<(), String> {
+        Ok(())
+    }
+    pub fn can_write_without_prompt() -> bool {
+        true
     }
 }
 

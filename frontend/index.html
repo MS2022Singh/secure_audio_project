@@ -284,6 +284,10 @@
                         </div>
                     </div>
 
+                    <div id="boxElevationHint" style="display:none; align-items:center; gap: 12px; flex-wrap: wrap; background:#1b1530; border:1px solid var(--purple-text); border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 12.5px; color: var(--text-muted);">
+                        <span style="flex: 1; min-width: 240px;">Diviora is not running as Administrator, so Lock Config, Disable and Remove each show a Windows permission prompt. Restart it as Administrator once to apply changes without prompts.</span>
+                        <button class="btn-dark" id="btnRelaunchAdmin">Run as Administrator</button>
+                    </div>
                     <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px;">
                         <div id="btnTriggerApoUpload" class="drop-box" style="flex-grow: 1;">
                             📁 Click to Sync / Update Master Target Configuration File
@@ -732,6 +736,7 @@
                 if (ok) {
                     isMasterAuthenticated = true;
                     document.getElementById('lblMasterAuthError').innerText = "";
+                    refreshElevationHint();
                     refreshLicenceState('developer');
                 } else {
                     document.getElementById('lblMasterAuthError').innerText = "Invalid Access Token";
@@ -1103,23 +1108,27 @@
         // APO Profile Sync & State Toggle
         document.getElementById('toggleApoEnableConfig').addEventListener('change', async (e) => {
             const isEnabled = e.target.checked;
-            document.getElementById('lblApoToggleStatus').innerText = isEnabled ? "ENABLED" : "DISABLED";
-            document.getElementById('lblApoToggleStatus').style.color = isEnabled ? "var(--primary-green)" : "var(--error-red)";
-            
-            if (isEnabled) {
-                document.getElementById('lblApoSyncStatus').innerText = "✔ " + activeApoFileName + " loaded (held in memory; press Lock Config to apply system-wide).";
-                document.getElementById('lblApoSyncStatus').style.color = "var(--primary-green)";
-                document.getElementById('lblApoScriptStatus').innerText = "● Waiting for Lock Config";
-                document.getElementById('lblApoScriptStatus').style.color = "var(--purple-text)";
-            } else {
-                document.getElementById('lblApoSyncStatus').innerText = "● # DIVIORA SYSTEM-WIDE MATRIX (BYPASSED / DISABLED)";
-                document.getElementById('lblApoSyncStatus').style.color = "var(--error-red)";
-                document.getElementById('lblApoScriptStatus').innerText = "● Standby: Native Processing Unloaded.";
-                document.getElementById('lblApoScriptStatus').style.color = "var(--text-muted)";
+            const sync = document.getElementById('lblApoSyncStatus');
+            const script = document.getElementById('lblApoScriptStatus');
+            if (isEnabled && (!activeApoProfilePayload || activeApoProfilePayload === "REMOVE")) {
+                e.target.checked = false;
+                alert("Upload a configuration first.");
+                return;
             }
-
-            try { await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload, isEnabled: isEnabled }); }
-            catch (err) { alert("Could not change the equalizer state: " + err); }
+            script.innerText = isEnabled ? "● Enabling…" : "● Disabling: switching Windows audio to unprocessed sound…";
+            script.style.color = "var(--purple-text)";
+            try {
+                const msg = await invokeCmd('upload_apo_profile', { profileData: isEnabled ? "ENABLE" : activeApoProfilePayload, isEnabled: isEnabled });
+                document.getElementById('lblApoToggleStatus').innerText = isEnabled ? "ENABLED" : "DISABLED";
+                document.getElementById('lblApoToggleStatus').style.color = isEnabled ? "var(--primary-green)" : "var(--error-red)";
+                sync.innerText = isEnabled ? "✔ " + activeApoFileName + " enabled." : "● Equalizer disabled (configuration kept in Diviora).";
+                sync.style.color = isEnabled ? "var(--primary-green)" : "var(--text-muted)";
+                script.innerText = "● " + msg;
+            } catch (err) {
+                e.target.checked = !isEnabled; // nothing changed
+                script.innerText = "✖ " + err;
+                script.style.color = "var(--error-red)";
+            }
         });
 
         // Lock Config
@@ -1230,17 +1239,37 @@
         });
 
         document.getElementById('btnRemoveApoFile').addEventListener('click', async () => {
-            activeApoProfilePayload = "REMOVE";
-            try { await invokeCmd('upload_apo_profile', { profileData: "REMOVE", isEnabled: false }); }
+            if (!confirm("Remove the configuration completely? It is deleted from Diviora and from Windows audio (sound returns to normal).")) return;
+            let msg;
+            try { msg = await invokeCmd('upload_apo_profile', { profileData: "REMOVE", isEnabled: false }); }
             catch (err) { alert("Could not remove: " + err); return; }
+            // Nothing of it stays in this window either.
+            activeApoProfilePayload = "";
+            activeApoFileName = "";
+            apoWarningsText = "";
+            document.getElementById('boxApoWarnings').innerText = "";
+            document.getElementById('boxApoWarningsWrap').style.display = 'none';
+            document.getElementById('apoFileHiddenLoader').value = "";
             document.getElementById('toggleApoEnableConfig').checked = false;
             document.getElementById('lblApoToggleStatus').innerText = "DISABLED";
             document.getElementById('lblApoToggleStatus').style.color = "var(--error-red)";
             document.getElementById('lblApoSyncStatus').innerText = "● Standby: Native Processing Unloaded.";
             document.getElementById('lblApoSyncStatus').style.color = "var(--text-muted)";
-            document.getElementById('lblApoScriptStatus').innerText = "● System Hook Disengaged";
+            document.getElementById('lblApoScriptStatus').innerText = "● " + msg;
             document.getElementById('lblApoScriptStatus').style.color = "var(--text-muted)";
             document.getElementById('btnRemoveApoFile').style.display = "none";
+        });
+
+        // Running as Administrator? Otherwise each system-wide change shows a Windows prompt.
+        async function refreshElevationHint() {
+            try {
+                const elevated = await invokeCmd('is_app_elevated');
+                document.getElementById('boxElevationHint').style.display = elevated ? 'none' : 'flex';
+            } catch (e) {}
+        }
+        document.getElementById('btnRelaunchAdmin').addEventListener('click', async () => {
+            try { await invokeCmd('relaunch_as_admin'); }
+            catch (err) { alert("Could not restart as Administrator: " + err); }
         });
 
         // Telemetry Polling Loop

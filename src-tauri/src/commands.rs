@@ -87,6 +87,44 @@ fn effect_line(text: &str, device: &str, channels: usize) -> String {
         if small { " This is almost no audible change." } else { "" })
 }
 
+/// Make Windows audio use exactly the current settings now (asking for administrator
+/// permission if this app is not running as Administrator). Empty = pass-through.
+fn apply_system_wide_now() -> Result<String, String> {
+    if !cfg!(windows) {
+        return Ok(String::new());
+    }
+    let payload = compose_apo_payload();
+    if payload.trim().is_empty() {
+        crate::apo_config::remove_locked_config_elevated()?;
+        Ok("Windows audio now plays unprocessed sound (within a second).".into())
+    } else {
+        crate::apo_config::write_locked_config_elevated(&payload)?;
+        Ok("Windows audio now uses the current settings (within a second).".into())
+    }
+}
+
+/// Is the app running with the rights to change the system-wide sound without prompts?
+#[tauri::command]
+pub fn is_app_elevated() -> bool {
+    !cfg!(windows) || crate::apo_config::can_write_without_prompt()
+}
+
+/// Restart Diviora as Administrator (one Windows prompt), so developer changes apply without
+/// further prompts.
+#[tauri::command]
+pub fn relaunch_as_admin(app: AppHandle) -> Result<(), String> {
+    require_developer()?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let ps = format!("Start-Process -FilePath '{}' -Verb RunAs", exe.display().to_string().replace('\'', "''"));
+    let st = std::process::Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+        .status().map_err(|e| e.to_string())?;
+    if !st.success() {
+        return Err("The Windows prompt was declined.".into());
+    }
+    app.exit(0);
+    Ok(())
+}
+
 /// After a developer setting changes: update the locked configuration only if that needs no
 /// administrator prompt (app running elevated). Otherwise the change is applied by the next
 /// Lock Config (one prompt), instead of a Windows prompt on every toggle.
@@ -231,14 +269,33 @@ fn find_installer_script() -> Option<PathBuf> {
 #[tauri::command]
 pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
     require_developer()?;
-    if profile_data == "REMOVE" || !is_enabled {
-        if profile_data == "REMOVE" {
-            *STAGED_PROFILE.lock().unwrap() = None;
-        }
+    if profile_data == "REMOVE" {
+        // Remove everywhere: memory, the published-config cache, and the locked file in Windows audio.
+        *STAGED_PROFILE.lock().unwrap() = None;
         *EQ_ENABLED.lock().unwrap() = false;
-        // Equalizer off = pass-through; an active watermark keeps running.
-        reapply_if_locked()?;
-        return Ok("Equalizer disabled (pass-through).".to_string());
+        *SYNCED_CONFIG.lock().unwrap() = None;
+        let _ = fs::remove_file(config_cache_path());
+        *PROFILE_LOCKED.lock().unwrap() = false;
+        let r = apply_system_wide_now()?;
+        return Ok(format!("Configuration removed from Diviora and from Windows audio. {}", r));
+    }
+    if !is_enabled {
+        // Equalizer off = pass-through right away (an active watermark keeps running).
+        *EQ_ENABLED.lock().unwrap() = false;
+        let r = apply_system_wide_now()?;
+        return Ok(format!("Equalizer disabled. {}", r));
+    }
+    if profile_data == "ENABLE" {
+        // Toggle back on with the configuration already uploaded.
+        if STAGED_PROFILE.lock().unwrap().is_none() {
+            return Err("Upload a configuration first.".into());
+        }
+        *EQ_ENABLED.lock().unwrap() = true;
+        if *PROFILE_LOCKED.lock().unwrap() {
+            let r = apply_system_wide_now()?;
+            return Ok(format!("Equalizer enabled. {}", r));
+        }
+        return Ok("Equalizer enabled; press Lock Config to apply it system-wide.".into());
     }
     let summary = diviora_dsp::eqapo::parse(&profile_data, None);
     // Device: blocks only apply to matching outputs (as in Equalizer APO): say whether they
