@@ -47,8 +47,9 @@ fn virtual_channel_multichannel_config_converts_and_runs() {
 #[test]
 fn same_structure_without_extensions_behaves_like_equalizer_apo() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/");
-    let text = std::fs::read_to_string(format!("{}virtual_channels_config.txt", dir)).unwrap()
-        .replace("DivioraExtensions: on\n", "");
+    // Drop the opt-in line (works with Windows and Unix line endings).
+    let text: String = std::fs::read_to_string(format!("{}virtual_channels_config.txt", dir)).unwrap()
+        .lines().filter(|l| l.trim() != "DivioraExtensions: on").map(|l| format!("{}\n", l)).collect();
     let cfg = eqapo::parse(&text, None);
     assert!(cfg.warnings.iter().all(|w| w.reason.starts_with("ignored, as in Equalizer APO 1.4.2")), "{:?}", cfg.warnings);
     assert!(cfg.warnings.iter().any(|w| w.text.starts_with("Copy: CX=")));
