@@ -78,6 +78,7 @@ dependencies = [
  "diviora-client",
  "diviora-dsp",
  "getrandom 0.2.17",
+ "minisign-verify",
  "pbkdf2",
  "rodio",
  "serde",

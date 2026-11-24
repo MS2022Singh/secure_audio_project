@@ -20,7 +20,22 @@ async fn auto_update(app: tauri::AppHandle) {
         Ok(u) => u,
         Err(e) => { set(format!("updates not configured in this build ({})", e)); return; }
     };
-    match updater.check().await {
+    let checked = updater.check().await;
+    // Direct connection blocked (VPN, proxy auto-configuration, firewall rules for unknown
+    // apps): try again through Windows' own internet settings, like Chrome and Windows do.
+    #[cfg(windows)]
+    if let Err(e) = &checked {
+        let first = error_chain(e);
+        let h = app.clone();
+        let r = tauri::async_runtime::spawn_blocking(move || windows_fallback_update(&h)).await;
+        match r {
+            Ok(Ok(Some(msg))) => { set(msg); return; }
+            Ok(Ok(None)) => { set(format!("up to date (checked {} via Windows internet settings)", chrono::Local::now().format("%H:%M"))); return; }
+            Ok(Err(e2)) => { set(format!("update check failed: {} | via Windows internet settings: {}", first, e2)); return; }
+            Err(_) => {}
+        }
+    }
+    match checked {
         Ok(Some(update)) => {
             set(format!("installing version {}…", update.version));
             match update.download_and_install(|_, _| {}, || {}).await {
@@ -173,4 +188,79 @@ pub fn handle_cli() -> Option<i32> {
         return Some(apo_config::apply_locked_config_from_file(std::path::Path::new(&args[2])));
     }
     None
+}
+
+/// Download with Windows' own networking (.NET WebClient: system proxy incl. auto-configuration,
+/// system DNS and certificates), through Windows PowerShell.
+#[cfg(windows)]
+fn windows_download(url: &str, out: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let q = |s: &str| s.replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
+         $w=New-Object Net.WebClient; $w.Proxy=[Net.WebRequest]::GetSystemWebProxy(); \
+         $w.Proxy.Credentials=[Net.CredentialCache]::DefaultNetworkCredentials; $w.DownloadFile('{}','{}')",
+        q(url), q(&out.display().to_string()));
+    let o = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .creation_flags(0x0800_0000) // no console window
+        .output()
+        .map_err(|e| format!("PowerShell not available: {}", e))?;
+    if o.status.success() && out.exists() {
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&o.stderr).lines().find(|l| !l.trim().is_empty()).unwrap_or("download failed").to_string();
+        Err(err.trim().to_string())
+    }
+}
+
+/// Update check + signed install without Tauri's HTTP client. Ok(None) = up to date.
+#[cfg(windows)]
+fn windows_fallback_update(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+    let dir = std::env::temp_dir().join("diviora-update");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let updater_cfg = app.config().plugins.0.get("updater").cloned().unwrap_or_default();
+    let endpoint = updater_cfg.get("endpoints").and_then(|e| e.get(0)).and_then(|e| e.as_str())
+        .ok_or("no update address configured")?.to_string();
+    let pubkey = updater_cfg.get("pubkey").and_then(|k| k.as_str()).unwrap_or("").to_string();
+    if pubkey.is_empty() { return Err("updates are not signed in this build".into()); }
+
+    let manifest_path = dir.join("latest.json");
+    windows_download(&endpoint, &manifest_path)?;
+    let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest_path).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("bad update manifest: {}", e))?;
+    let latest = manifest.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0").trim_start_matches('v').to_string();
+    let parse = |v: &str| -> Vec<u64> { v.split(['.', '-']).map(|p| p.parse().unwrap_or(0)).take(3).collect() };
+    let current = app.package_info().version.to_string();
+    if parse(&latest) <= parse(&current) {
+        return Ok(None);
+    }
+    let plat = manifest.pointer("/platforms/windows-x86_64").ok_or("no Windows update in the manifest")?;
+    let url = plat.get("url").and_then(|u| u.as_str()).ok_or("no download address")?;
+    let sig = plat.get("signature").and_then(|u| u.as_str()).ok_or("no signature")?;
+    let setup = dir.join("Diviora-Setup.exe");
+    windows_download(url, &setup)?;
+
+    // Same check as Tauri's updater: the installer must be signed with the update key.
+    let data = std::fs::read(&setup).map_err(|e| e.to_string())?;
+    let b64 = |s: &str| diviora_dsp::watermark::base64_decode(s).and_then(|b| String::from_utf8(b).ok());
+    let pk = minisign_verify::PublicKey::decode(&b64(&pubkey).ok_or("bad public key")?).map_err(|e| e.to_string())?;
+    let signature = minisign_verify::Signature::decode(&b64(sig).ok_or("bad signature")?).map_err(|e| e.to_string())?;
+    if pk.verify(&data, &signature, true).is_err() {
+        let _ = std::fs::remove_file(&setup);
+        return Err("the downloaded update's signature is not valid; it was deleted".into());
+    }
+
+    // Run it like Tauri's updater (passive, update mode, restart Diviora afterwards).
+    let ps = format!("Start-Process -FilePath '{}' -ArgumentList '/P','/UPDATE','/R'",
+        setup.display().to_string().replace('\'', "''"));
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+        .spawn()
+        .map_err(|e| format!("could not start the installer: {}", e))?;
+    // Give the installer a moment to start, then leave so it can replace the app.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    app.exit(0);
+    Ok(Some(format!("installing version {}…", latest)))
 }
