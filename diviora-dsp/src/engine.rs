@@ -21,17 +21,35 @@ pub struct Coefs {
 impl Coefs {
     /// RBJ "Audio EQ Cookbook" coefficients, normalised so a0 == 1.
     pub fn from_spec(spec: &BiquadSpec, sample_rate: f64) -> Coefs {
-        let nyq_safe = sample_rate * 0.49;
-        let f = spec.freq.min(nyq_safe);
+        // Same formulas as Equalizer APO 1.4 (filters/BiQuad.cpp, filters/BiQuadFilter.cpp).
+        let is_shelf = matches!(spec.kind, FilterKind::LowShelf | FilterKind::HighShelf);
+        let a = if matches!(spec.kind, FilterKind::Peaking | FilterKind::LowShelf | FilterKind::HighShelf) {
+            10f64.powf(spec.gain_db / 40.0)
+        } else {
+            10f64.powf(spec.gain_db / 20.0)
+        };
+        let mut f = spec.freq;
+        if spec.corner && is_shelf {
+            // Corner-frequency shelves (LS/HS): Equalizer APO's DCX2496 adjustment.
+            let s = match spec.shape {
+                Shape::SlopeDbPerOct(db) => db / 12.0,
+                Shape::Q(q) => 1.0 / ((1.0 / (q * q) - 2.0) / (a + 1.0 / a) + 1.0),
+                Shape::BwOct(_) => 0.9,
+            };
+            let factor = 10f64.powf(spec.gain_db.abs() / 80.0 / s);
+            if spec.kind == FilterKind::LowShelf { f *= factor } else { f /= factor }
+        }
+        let f = f.min(sample_rate * 0.49);
         let w0 = 2.0 * PI * f / sample_rate;
         let (sn, cs) = w0.sin_cos();
-        let a = 10f64.powf(spec.gain_db / 40.0);
         let alpha = match spec.shape {
             Shape::Q(q) => sn / (2.0 * q),
-            Shape::SlopeDbPerOct(db) => {
-                let s = (db / 12.0).max(1e-6);
+            Shape::SlopeDbPerOct(db) if is_shelf => {
+                let s = (db / 12.0).max(1e-9);
                 sn / 2.0 * ((a + 1.0 / a) * (1.0 / s - 1.0) + 2.0).max(0.0).sqrt()
             }
+            Shape::SlopeDbPerOct(_) => sn / (2.0 * std::f64::consts::FRAC_1_SQRT_2),
+            Shape::BwOct(bw) => sn * (std::f64::consts::LN_2 / 2.0 * bw * w0 / sn).sinh(),
         };
         let sa = 2.0 * a.sqrt() * alpha;
         // First-order low/high pass (bilinear transform).
@@ -342,7 +360,7 @@ mod tests {
     use crate::eqapo::parse;
 
     fn spec(kind: FilterKind, freq: f64, gain: f64, q: f64) -> BiquadSpec {
-        BiquadSpec { kind, freq, gain_db: gain, shape: Shape::Q(q) }
+        BiquadSpec { kind, freq, gain_db: gain, shape: Shape::Q(q), corner: false }
     }
 
     #[test]
@@ -407,7 +425,7 @@ mod tests {
     #[test]
     fn iir_first_order_shelf_graphic_eq_and_conditions() {
         // Raw IIR equal to a known biquad.
-        let spec = BiquadSpec { kind: FilterKind::Peaking, freq: 1000.0, gain_db: -12.0, shape: Shape::Q(1.0) };
+        let spec = BiquadSpec { kind: FilterKind::Peaking, freq: 1000.0, gain_db: -12.0, shape: Shape::Q(1.0), corner: false };
         let c = Coefs::from_spec(&spec, 48000.0);
         let text = format!("Filter: ON IIR Order 2 Coefficients {} {} {} 1 {} {}", c.b0, c.b1, c.b2, c.a1, c.a2);
         let cfg = parse(&text, None);
@@ -416,7 +434,7 @@ mod tests {
         assert!((sine_rms_db(&mut e, 1000.0) + 12.0).abs() < 0.2);
 
         // First-order low shelf: full gain far below Fc, half (in dB) at Fc.
-        let s1 = BiquadSpec { kind: FilterKind::LowShelf1, freq: 200.0, gain_db: 6.0, shape: Shape::Q(0.7) };
+        let s1 = BiquadSpec { kind: FilterKind::LowShelf1, freq: 200.0, gain_db: 6.0, shape: Shape::Q(0.7), corner: false };
         let k = Coefs::from_spec(&s1, 48000.0);
         assert!((k.magnitude_db(5.0, 48000.0) - 6.0).abs() < 0.1);
         assert!((k.magnitude_db(200.0, 48000.0) - 3.0).abs() < 0.1);
@@ -436,7 +454,7 @@ mod tests {
         let cfg = crate::eqapo::parse_with(text, None, &ctx);
         assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
         assert_eq!(cfg.stages.len(), 1);
-        assert_eq!(cfg.stages[0].1, Stage::Gain { gain_db: -2.0, channels: ChannelSel::All });
+        assert_eq!(cfg.stages[0].1, Stage::Gain { gain_db: -2.0, channels: ChannelSel::List(vec![0, 1]) });
     }
 
     #[test]

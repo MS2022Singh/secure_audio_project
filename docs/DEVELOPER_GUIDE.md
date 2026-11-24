@@ -66,15 +66,17 @@ Open it with **Ctrl + Shift + D** (on a phone: tap the **DIVIORA** logo 7 times 
   login for 60 s, and the count survives restarting the app.
 - **Upload config:** Equalizer APO 1.4.x `.txt`. Select the configuration **together with** any
   files it uses (its `Include:` .txt files and `Convolution:` .wav impulse responses, multi-select
-  in the file picker); they are embedded in the locked configuration. Diviora follows
-  Equalizer APO 1.4.2 exactly: Preamp, all its Filter types (incl. IIR, LS/HS 6dB/12dB), GraphicEQ,
-  Convolution, Channel (L R C LFE RL RR RC SL SR or numbers), Copy, Delay, Device, Include, Stage,
-  If/ElseIf/Else/EndIf, Eval and backtick expressions (for the real sample rate, channels and
-  device). Lines Equalizer APO silently ignores (unknown filter types such as NOF, `Channels=` in
-  Filter lines, per-channel `Delay: L=…`, virtual channel names in Copy/Channel) are ignored too and
-  listed as "ignored, as in Equalizer APO 1.4.2". Only VST and LoudnessCorrection are not supported.
-  Diviora's own extensions (virtual channels, per-channel Delay, `Channels=`, NOF as a notch) apply
-  only if the file contains the line `DivioraExtensions: on`.
+  in the file picker); they are embedded in the locked configuration. Diviora reads it
+  exactly like Equalizer APO 1.4 (checked against its source code): Preamp; all its Filter types
+  with its default values (notch Q 30, shelf S 0.9, LS/HS corner frequency, BW Oct, slope dB/12);
+  IIR; GraphicEQ; Convolution; Channel (L R C LFE RL RR SL SR by layout, numbers, and virtual
+  channels); Copy, which creates virtual channels from new names, as Equalizer APO does; Delay;
+  Device; Include; Stage; If/ElseIf/Else/EndIf; Eval; backtick expressions. Lines Equalizer APO
+  produces nothing for (unknown filter types such as NOF, per-channel `Delay: L=…`) are listed
+  as "ignored, as in Equalizer APO 1.4.2"; `Channels=` inside a Filter line is not read (the
+  filter uses the current Channel: selection). Only VST and LoudnessCorrection are not
+  supported. Diviora's own extensions (NOF as a notch, per-channel Delay, `Channels=`, Copy
+  subtraction) apply only if the file contains `DivioraExtensions: on`.
 - **Updates without clutter:** Windows installs new versions by itself (start-up and every 6 hours).
   Phones show **Download update**: the app downloads it into its own storage and opens Android's
   installer (tap **Update**); nothing is saved to Downloads and nothing needs uninstalling. The

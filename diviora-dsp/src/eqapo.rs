@@ -99,7 +99,10 @@ pub enum FilterKind {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Shape {
     Q(f64),
+    /// Shelf slope in dB per octave (S = slope / 12).
     SlopeDbPerOct(f64),
+    /// Bandwidth in octaves (`BW Oct n`), Equalizer APO's digital formula.
+    BwOct(f64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -108,6 +111,8 @@ pub struct BiquadSpec {
     pub freq: f64,
     pub gain_db: f64,
     pub shape: Shape,
+    /// `LS`/`HS` (not `LSC`/`HSC`): `freq` is the corner frequency, as in Equalizer APO.
+    pub corner: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -276,31 +281,71 @@ struct ParseState {
 /// Equalizer APO. Virtual channels get indices after the device's channels (at least 8),
 /// exist only inside the engine and are never sent to the speakers.
 pub struct ChanMap {
+    /// The device's channel names, as Equalizer APO names them for this channel count.
+    names: Vec<String>,
+    /// Virtual channels created by `Copy` (upper-case name -> index after the device channels).
     virt: HashMap<String, usize>,
     next: usize,
-    /// Diviora extensions (`DivioraExtensions: on`): virtual channels, per-channel Delay,
-    /// `Channels=` in Filter lines, extra filter names. Off = exactly Equalizer APO 1.4.2,
-    /// which silently ignores such lines.
+    /// Diviora extensions (`DivioraExtensions: on`).
     pub extended: bool,
+}
+
+/// Equalizer APO's names for the default speaker layout of `n` channels
+/// (helpers/ChannelHelper.cpp): stereo L R; quad L R RL RR; 5.1 L R C LFE SL SR;
+/// 7.1 L R C LFE RL RR SL SR; otherwise numbers.
+pub fn standard_channel_names(n: usize) -> Vec<String> {
+    let v: &[&str] = match n {
+        1 => &["C"],
+        2 => &["L", "R"],
+        4 => &["L", "R", "RL", "RR"],
+        6 => &["L", "R", "C", "LFE", "SL", "SR"],
+        8 => &["L", "R", "C", "LFE", "RL", "RR", "SL", "SR"],
+        _ => &[],
+    };
+    if v.is_empty() {
+        (1..=n).map(|i| i.to_string()).collect()
+    } else {
+        v.iter().map(|s| s.to_string()).collect()
+    }
 }
 
 impl ChanMap {
     pub fn new(device_channels: usize) -> ChanMap {
-        ChanMap { virt: HashMap::new(), next: device_channels.max(8).min(MAX_CHANNELS), extended: false }
+        let n = device_channels.clamp(1, MAX_CHANNELS);
+        ChanMap { names: standard_channel_names(n), virt: HashMap::new(), next: n, extended: false }
     }
-    /// Index of a channel name; unknown names become new virtual channels when `create`.
+    pub fn device_channels(&self) -> usize { self.names.len() }
+    /// All channels that exist now (device + virtual), for "Channel: all".
+    pub fn all_now(&self) -> ChannelSel { ChannelSel::List((0..self.next).collect()) }
+    /// The device channels (selection before any Channel: line).
+    pub fn device_sel(&self) -> ChannelSel { ChannelSel::List((0..self.names.len()).collect()) }
+
+    /// Equalizer APO's lookup (ChannelHelper::getChannelIndex): number (from 1), name, the
+    /// SL/RL, SR/RR and SUB/LFE fallbacks, then virtual channels.
+    pub fn lookup(&self, name: &str) -> Option<usize> {
+        let w = name.trim().to_uppercase();
+        if w.is_empty() { return None; }
+        if w.as_bytes()[0].is_ascii_digit() {
+            let k: usize = w.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok()?;
+            return if k >= 1 && k <= self.next { Some(k - 1) } else { None };
+        }
+        let find = |n: &str| self.names.iter().position(|x| x == n);
+        find(&w)
+            .or_else(|| match w.as_str() {
+                "SL" => find("RL"), "SR" => find("RR"), "RL" => find("SL"), "RR" => find("SR"),
+                "SUB" => find("LFE"), _ => None,
+            })
+            .or_else(|| self.virt.get(&w).copied())
+    }
+
+    /// Lookup; when `create`, an unknown name becomes a new virtual channel (Equalizer APO does
+    /// this for Copy targets).
     pub fn resolve(&mut self, name: &str, create: bool) -> Option<usize> {
-        let n = name.trim();
-        if let Some(i) = channel_index(n) {
+        if let Some(i) = self.lookup(name) {
             return Some(i);
         }
-        let key = n.to_uppercase();
-        if let Some(i) = self.virt.get(&key) {
-            return Some(*i);
-        }
-        let valid = !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-            && key.chars().next().map_or(false, |c| c.is_ascii_alphabetic());
-        if create && self.extended && valid && self.next < MAX_CHANNELS {
+        let key = name.trim().to_uppercase();
+        if create && !key.is_empty() && !key.as_bytes()[0].is_ascii_digit() && self.next < MAX_CHANNELS {
             let i = self.next;
             self.next += 1;
             self.virt.insert(key, i);
@@ -326,13 +371,14 @@ pub fn parse(text: &str, resolver: Option<IncludeResolver>) -> EqApoConfig {
 pub fn parse_with(text: &str, resolver: Option<IncludeResolver>, ctx: &Context) -> EqApoConfig {
     let mut cfg = EqApoConfig::default();
     let mut st = ParseState {
-        channels: ChannelSel::All,
+        channels: ChannelSel::All, // replaced below by the device channels
         device: DeviceSel::All,
         conds: Vec::new(),
         vars: ctx.vars(),
         files: embedded_files(text),
         chans: ChanMap::new(ctx.channels),
     };
+    st.channels = st.chans.device_sel();
     parse_into(text, "config", resolver, 0, &mut st, &mut cfg);
     if !st.conds.is_empty() {
         warn(&mut cfg, "config", 0, "If:", "missing EndIf: (block closed at end of file)");
@@ -460,11 +506,13 @@ fn parse_into(
                 let mut rest = Vec::new();
                 let mut bad = None;
                 let has_channels_param = args.split_whitespace().any(|t| t.len() > 9 && t[..9].eq_ignore_ascii_case("channels="));
-                if has_channels_param && !st.chans.extended {
-                    warn(cfg, file, lineno, line, ignored("Filter lines have no 'Channels=' parameter (select channels with a Channel: line)"));
-                    continue;
-                }
+                let mut channels_note = false;
                 for tok in args.split_whitespace() {
+                    if tok.len() > 9 && tok[..9].eq_ignore_ascii_case("channels=") && !st.chans.extended {
+                        // Equalizer APO does not read it: the filter uses the current Channel: selection.
+                        channels_note = true;
+                        continue;
+                    }
                     if tok.len() > 9 && tok[..9].eq_ignore_ascii_case("channels=") {
                         match parse_channel_list(&tok[9..].replace(',', " "), &mut st.chans) {
                             Some(c) => chans = c,
@@ -478,17 +526,30 @@ fn parse_into(
                     warn(cfg, file, lineno, line, format!("unknown channel in '{}'", b));
                     continue;
                 }
+                let _ = has_channels_param;
                 match parse_filter(&rest.join(" "), st.chans.extended) {
-                    Ok(Some(FilterDef::Biquad(spec))) => cfg.stages.push((st.device.clone(), Stage::Biquad { spec, channels: chans })),
-                    Ok(Some(FilterDef::Iir(b, a))) => cfg.stages.push((st.device.clone(), Stage::Iir { b, a, channels: chans })),
+                    Ok(Some(def)) => {
+                        match def {
+                            FilterDef::Biquad(spec) => cfg.stages.push((st.device.clone(), Stage::Biquad { spec, channels: chans })),
+                            FilterDef::Iir(b, a) => cfg.stages.push((st.device.clone(), Stage::Iir { b, a, channels: chans })),
+                        }
+                        if channels_note {
+                            warn(cfg, file, lineno, line, "partly applied, as in Equalizer APO 1.4.2: 'Channels=' is not read; the filter uses the current Channel: selection".to_string());
+                        }
+                    }
                     Ok(None) => {} // filter switched OFF
                     Err(e) => warn(cfg, file, lineno, line, e),
                 }
             }
-            "channel" => match parse_channel_sel(args, &mut st.chans) {
-                Some(c) => st.channels = c,
-                None => warn(cfg, file, lineno, line, ignored("unknown channel name; the previous channel selection stays (Equalizer APO knows L R C LFE RL RR RC SL SR and numbers)")),
-            },
+            "channel" => {
+                // Equalizer APO selects the names that exist (device or virtual channels) and
+                // silently skips the others; with none left, nothing is selected.
+                let (sel, unknown) = parse_channel_sel(args, &mut st.chans);
+                st.channels = sel;
+                if !unknown.is_empty() {
+                    warn(cfg, file, lineno, line, ignored(&format!("channel(s) {} do not exist at this point and are skipped", unknown.join(", "))));
+                }
+            }
             "device" => {
                 let a = args.trim();
                 if a.eq_ignore_ascii_case("all") || a.is_empty() {
@@ -499,7 +560,12 @@ fn parse_into(
                 }
             }
             "copy" => match parse_copy(args, &mut st.chans) {
-                Ok(routes) => cfg.stages.push((st.device.clone(), Stage::Mix { routes })),
+                Ok((routes, notes)) => {
+                    cfg.stages.push((st.device.clone(), Stage::Mix { routes }));
+                    if !notes.is_empty() {
+                        warn(cfg, file, lineno, line, format!("partly applied, as in Equalizer APO 1.4.2: {}", notes.join("; ")));
+                    }
+                }
                 Err(e) => warn(cfg, file, lineno, line, e),
             },
             "delay" => match parse_delay(args, &mut st.chans) {
@@ -672,29 +738,25 @@ fn parse_delay(s: &str, chans: &mut ChanMap) -> Result<Vec<(f64, Option<ChannelS
     Ok(out)
 }
 
-fn channel_index(name: &str) -> Option<usize> {
-    let n = name.trim().to_uppercase();
-    if let Ok(i) = n.parse::<usize>() {
-        return if (1..=MAX_CHANNELS).contains(&i) { Some(i - 1) } else { None };
-    }
-    match n.as_str() {
-        "LFE" => Some(3),
-        "RC" => Some(4),
-        "FL" => Some(0),
-        "FR" => Some(1),
-        "FC" => Some(2),
-        "BL" => Some(4),
-        "BR" => Some(5),
-        _ => CHANNEL_NAMES.iter().position(|c| *c == n),
-    }
-}
 
-fn parse_channel_sel(s: &str, chans: &mut ChanMap) -> Option<ChannelSel> {
-    let t = s.trim();
-    if t.eq_ignore_ascii_case("all") {
-        return Some(ChannelSel::All);
+/// `Channel:` words -> (selection, unknown names). "all" = every channel existing now.
+fn parse_channel_sel(s: &str, chans: &mut ChanMap) -> (ChannelSel, Vec<String>) {
+    let mut v: Vec<usize> = Vec::new();
+    let mut unknown = Vec::new();
+    for tok in s.split_whitespace() {
+        if tok.eq_ignore_ascii_case("all") {
+            if let ChannelSel::List(all) = chans.all_now() { v = all; }
+            continue;
+        }
+        // Extension: Channel: may create virtual channels; Equalizer APO only selects.
+        let create = chans.extended;
+        match chans.resolve(tok, create) {
+            Some(i) => if !v.contains(&i) { v.push(i) },
+            None => unknown.push(tok.to_string()),
+        }
     }
-    parse_channel_list(t, chans)
+    v.sort_unstable();
+    (ChannelSel::List(v), unknown)
 }
 
 fn parse_channel_list(t: &str, chans: &mut ChanMap) -> Option<ChannelSel> {
@@ -753,183 +815,235 @@ fn parse_filter(args: &str, extended: bool) -> Result<Option<FilterDef>, String>
     parse_biquad(&toks, extended).map(|o| o.map(FilterDef::Biquad))
 }
 
-fn parse_biquad(toks: &[&str], extended: bool) -> Result<Option<BiquadSpec>, String> {
-    let mut i = 0;
-    match toks.first().map(|t| t.to_uppercase()) {
-        Some(ref t) if t == "ON" => i += 1,
-        Some(ref t) if t == "OFF" => return Ok(None),
-        _ => {}
+/// Leading number of a string, like C's wcstod (0.0 if none).
+fn leading_num(s: &str) -> f64 {
+    let t = s.trim_start();
+    let mut end = 0;
+    let b = t.as_bytes();
+    while end < b.len() && (b[end].is_ascii_digit() || matches!(b[end], b'.' | b'-' | b'+' | b'e' | b'E')) {
+        end += 1;
     }
-    let ty = toks.get(i).ok_or("missing filter type")?.to_uppercase();
-    i += 1;
-    // Equalizer APO 1.4.2's filter types; anything else it silently ignores.
-    const EQAPO_TYPES: &[&str] = &["PK", "MODAL", "PEQ", "LP", "LPQ", "HP", "HPQ", "BP", "LS", "LSC", "HS", "HSC", "NO", "AP", "NONE"];
-    if !extended && !EQAPO_TYPES.contains(&ty.as_str()) {
-        return Err(ignored(&format!("filter type '{}' does not exist in Equalizer APO", ty)));
-    }
-
-    let kind = match ty.as_str() {
-        "PK" | "PEQ" | "PEAK" | "PEAKING" | "MODAL" | "EQ" => FilterKind::Peaking,
-        "LS" | "LSC" | "LSQ" | "LOWSHELF" => FilterKind::LowShelf,
-        "HS" | "HSC" | "HSQ" | "HIGHSHELF" => FilterKind::HighShelf,
-        "LP" | "LPQ" | "LPF" | "LOWPASS" => FilterKind::LowPass,
-        "HP" | "HPQ" | "HPF" | "HIGHPASS" => FilterKind::HighPass,
-        "LP1" | "LPF1" => FilterKind::LowPass1,
-        "HP1" | "HPF1" => FilterKind::HighPass1,
-        "BP" | "BPQ" | "BANDPASS" => FilterKind::BandPass,
-        "NO" | "NOF" | "NOTCH" => FilterKind::Notch,
-        "AP" | "APQ" | "ALLPASS" => FilterKind::AllPass,
-        "NONE" => return Ok(None),
-        other => return Err(format!("filter type '{}' not supported", other)),
-    };
-    // Plain "LS"/"HS" followed by "6dB" are first-order shelves; "12dB" is the usual
-    // second-order shelf (Q 0.7071).
-    let plain_shelf = ty == "LS" || ty == "HS";
-    let mut kind = kind;
-
-    let mut freq = None;
-    let mut gain = 0.0;
-    let mut shape: Option<Shape> = None;
-
-    // Shelves may carry a slope right after the type: "LSC 12 dB Fc ..." / "LS 6dB Fc ...".
-    if matches!(kind, FilterKind::LowShelf | FilterKind::HighShelf) {
-        let mut slope = None;
-        if let Some(t) = toks.get(i) {
-            if let Some(s) = t.strip_suffix("dB").or_else(|| t.strip_suffix("db")).and_then(parse_num) {
-                slope = Some(s);
-                i += 1;
-            } else if let (Some(v), Some(u)) = (parse_num(t), toks.get(i + 1)) {
-                if u.eq_ignore_ascii_case("dB") {
-                    slope = Some(v);
-                    i += 2;
-                }
-            }
+    while end > 0 {
+        if let Ok(v) = t[..end].parse::<f64>() {
+            return v;
         }
-        match slope {
-            Some(s) if plain_shelf && (s - 6.0).abs() < 1e-9 => {
-                kind = if kind == FilterKind::LowShelf { FilterKind::LowShelf1 } else { FilterKind::HighShelf1 };
-            }
-            Some(s) if plain_shelf && (s - 12.0).abs() < 1e-9 => shape = Some(Shape::Q(std::f64::consts::FRAC_1_SQRT_2)),
-            Some(s) => shape = Some(Shape::SlopeDbPerOct(s)),
-            None => {}
-        }
+        end -= 1;
     }
-
-    while i < toks.len() {
-        let key = toks[i].to_uppercase();
-        match key.as_str() {
-            "FC" => {
-                // "Fc 1000 Hz", "Fc 1000Hz", "Fc 1.2 kHz", "Fc 1.2kHz"
-                let raw = toks.get(i + 1).copied().unwrap_or("");
-                let low = raw.to_lowercase();
-                let (num, mut mult) = if let Some(n) = low.strip_suffix("khz") { (n, 1000.0) }
-                    else if let Some(n) = low.strip_suffix("hz") { (n, 1.0) } else { (low.as_str(), 1.0) };
-                let v = parse_num(num);
-                i += 2;
-                match toks.get(i).map(|u| u.to_lowercase()) {
-                    Some(u) if u == "hz" => i += 1,
-                    Some(u) if u == "khz" => { mult = 1000.0; i += 1; }
-                    _ => {}
-                }
-                freq = v.map(|f| f * mult);
-            }
-            "GAIN" => {
-                gain = toks.get(i + 1).and_then(|v| parse_db(v)).ok_or("bad Gain value")?;
-                i += 2;
-                if toks.get(i).map(|u| u.eq_ignore_ascii_case("dB")).unwrap_or(false) { i += 1; }
-            }
-            "Q" => {
-                shape = Some(Shape::Q(toks.get(i + 1).and_then(|v| parse_num(v)).ok_or("bad Q value")?));
-                i += 2;
-            }
-            "BW" => {
-                // "BW Oct 1.0"
-                let mut j = i + 1;
-                if toks.get(j).map(|t| t.eq_ignore_ascii_case("Oct")).unwrap_or(false) { j += 1; }
-                let n = toks.get(j).and_then(|v| parse_num(v)).ok_or("bad BW value")?;
-                if n <= 0.0 { return Err("bandwidth must be positive".into()); }
-                shape = Some(Shape::Q(bw_oct_to_q(n)));
-                i = j + 1;
-            }
-            _ => i += 1,
-        }
-    }
-
-    let freq = freq.ok_or("missing Fc")?;
-    // Equalizer APO accepts wide ranges; frequencies above Nyquist are clamped by the engine,
-    // and the output safety clip protects the speakers from extreme gains.
-    if !(freq > 0.0 && freq <= 1_000_000.0) {
-        return Err(format!("frequency {} Hz out of range", freq));
-    }
-    if !(-200.0..=200.0).contains(&gain) {
-        return Err(format!("gain {} dB out of range", gain));
-    }
-    let shape = shape.unwrap_or(Shape::Q(std::f64::consts::FRAC_1_SQRT_2));
-    match shape {
-        Shape::Q(q) if !(q > 0.0 && q <= 10_000.0) => return Err(format!("Q {} out of range", q)),
-        Shape::SlopeDbPerOct(s) if !(s > 0.0 && s <= 96.0) => return Err(format!("slope {} dB/oct out of range", s)),
-        _ => {}
-    }
-    Ok(Some(BiquadSpec { kind, freq, gain_db: gain, shape }))
+    0.0
 }
 
-/// `Copy: L=0.5*L+0.5*R R=L C=-6dB*L+-6dB*R SUB=0`
-fn parse_copy(args: &str, chans: &mut ChanMap) -> Result<Vec<(usize, Vec<(usize, f64)>)>, String> {
-    // Remove spaces around operators so assignments become single tokens.
+/// Equalizer APO's frequency reader: "1.000" with 3 decimals is a thousands separator (Room EQ Wizard).
+fn eqapo_freq(s: &str) -> f64 {
+    let t: String = s.chars().filter(|c| *c != '\u{00A0}').collect();
+    let v = leading_num(&t);
+    if t.len() >= 5 && !t.contains(['e', 'E']) && t.as_bytes()[t.len() - 4] == b'.' {
+        return v * 1000.0;
+    }
+    v
+}
+
+/// A `Filter:` line, exactly as Equalizer APO 1.4 reads it (filters/BiQuadFilterFactory.cpp).
+fn parse_biquad(toks: &[&str], extended: bool) -> Result<Option<BiquadSpec>, String> {
+    use std::sync::OnceLock;
+    static RE: OnceLock<[regex_lite::Regex; 6]> = OnceLock::new();
+    let re = RE.get_or_init(|| [
+        regex_lite::Regex::new(r"^\s*ON\s+([A-Za-z]+)").unwrap(),
+        regex_lite::Regex::new(r"\s+Fc\s*([-+0-9.eE\x{00A0}]+)\s*H\s*z").unwrap(),
+        regex_lite::Regex::new(r"\s+Gain\s*([-+0-9.eE]+)\s*dB").unwrap(),
+        regex_lite::Regex::new(r"\s+Q\s*([-+0-9.eE]+)").unwrap(),
+        regex_lite::Regex::new(r"\s+BW\s+Oct\s*([-+0-9.eE]+)").unwrap(),
+        regex_lite::Regex::new(r"^\s*([-+0-9.eE]+)\s*dB").unwrap(),
+    ]);
+    // Equalizer APO converts ',' to '.' first.
+    let mut params = toks.join(" ").replace(',', ".");
+    if toks.first().map_or(false, |t| t.eq_ignore_ascii_case("OFF")) {
+        return Ok(None);
+    }
+    if extended && !toks.first().map_or(false, |t| t.eq_ignore_ascii_case("ON")) {
+        params = format!("ON {}", params); // extension: "ON" may be omitted
+    }
+    let Some(m) = re[0].captures(&params) else {
+        return Err(ignored("a Filter line must start with 'ON <type>'"));
+    };
+    let mut ty_raw = m.get(1).unwrap().as_str().to_string();
+    let mut rest = params[m.get(0).unwrap().end()..].to_string();
+    // Extension: first-order "LP1"/"HP1" (Equalizer APO reads the letters only: "LP").
+    if extended && rest.starts_with('1') && matches!(ty_raw.to_uppercase().as_str(), "LP" | "HP" | "LPF" | "HPF") {
+        ty_raw.push('1');
+        rest = rest[1..].to_string();
+    }
+    let ty = ty_raw.to_uppercase();
+
+    let kind = match ty.as_str() {
+        "PK" | "PEQ" | "MODAL" => FilterKind::Peaking,
+        "LP" | "LPQ" => FilterKind::LowPass,
+        "HP" | "HPQ" => FilterKind::HighPass,
+        "BP" => FilterKind::BandPass,
+        "LS" | "LSC" => FilterKind::LowShelf,
+        "HS" | "HSC" => FilterKind::HighShelf,
+        "NO" => FilterKind::Notch,
+        "AP" => FilterKind::AllPass,
+        "NONE" => return Ok(None),
+        // Diviora extensions (only with "DivioraExtensions: on").
+        "NOF" | "NOTCH" if extended => FilterKind::Notch,
+        "PEAK" | "PEAKING" | "EQ" if extended => FilterKind::Peaking,
+        "LSQ" | "LOWSHELF" if extended => FilterKind::LowShelf,
+        "HSQ" | "HIGHSHELF" if extended => FilterKind::HighShelf,
+        "LPF" | "LOWPASS" if extended => FilterKind::LowPass,
+        "HPF" | "HIGHPASS" if extended => FilterKind::HighPass,
+        "LP1" | "LPF1" if extended => FilterKind::LowPass1,
+        "HP1" | "HPF1" if extended => FilterKind::HighPass1,
+        "BPQ" | "BANDPASS" if extended => FilterKind::BandPass,
+        "APQ" | "ALLPASS" if extended => FilterKind::AllPass,
+        _ => return Err(ignored(&format!("'{}' is not an Equalizer APO filter type", ty_raw))),
+    };
+    let is_shelf = matches!(kind, FilterKind::LowShelf | FilterKind::HighShelf);
+
+    let freq = match re[1].captures(&rest) {
+        Some(c) => eqapo_freq(c.get(1).unwrap().as_str()),
+        None if extended => {
+            // Extension: "Fc 1.2 kHz" / "Fc 18kHz".
+            let k = regex_lite::Regex::new(r"(?i)\s+Fc\s*([-+0-9.eE]+)\s*kHz").unwrap();
+            match k.captures(&rest) {
+                Some(c) => leading_num(c.get(1).unwrap().as_str()) * 1000.0,
+                None => return Err(ignored("no frequency given ('Fc <n> Hz')")),
+            }
+        }
+        None => return Err(ignored("no frequency given ('Fc <n> Hz')")),
+    };
+    let mut gain = 0.0;
+    match re[2].captures(&rest) {
+        Some(c) => {
+            if !matches!(kind, FilterKind::LowPass | FilterKind::HighPass | FilterKind::Notch | FilterKind::AllPass
+                         | FilterKind::LowPass1 | FilterKind::HighPass1) {
+                gain = leading_num(c.get(1).unwrap().as_str());
+            }
+        }
+        None if matches!(kind, FilterKind::Peaking) || is_shelf => return Err(ignored("no gain given ('Gain <n> dB')")),
+        None => {}
+    }
+    let mut value = 0.0;
+    let mut is_bw_or_s = false;
+    if let Some(c) = re[3].captures(&rest) {
+        value = leading_num(c.get(1).unwrap().as_str());
+    }
+    if let Some(c) = re[4].captures(&rest) {
+        if !is_shelf {
+            value = leading_num(c.get(1).unwrap().as_str());
+            is_bw_or_s = true;
+        }
+    }
+    if let Some(c) = re[5].captures(&rest) {
+        if is_shelf {
+            value = leading_num(c.get(1).unwrap().as_str());
+            is_bw_or_s = true;
+        }
+    }
+    let shape = if value == 0.0 {
+        match kind {
+            FilterKind::Peaking | FilterKind::AllPass => return Err(ignored("no Q or bandwidth given")),
+            FilterKind::LowShelf | FilterKind::HighShelf => Shape::SlopeDbPerOct(0.9 * 12.0), // S = 0.9
+            FilterKind::Notch => Shape::Q(30.0),
+            _ => Shape::Q(std::f64::consts::FRAC_1_SQRT_2),
+        }
+    } else if is_shelf {
+        if is_bw_or_s { Shape::SlopeDbPerOct(value) } else { Shape::Q(value) }
+    } else if is_bw_or_s {
+        Shape::BwOct(value)
+    } else {
+        Shape::Q(value)
+    };
+    if !(freq > 0.0 && freq.is_finite()) {
+        return Err(ignored("frequency must be above 0 Hz"));
+    }
+    // A zero or negative Q/bandwidth/slope would make an unstable filter: never applied.
+    match shape {
+        Shape::Q(v) | Shape::BwOct(v) | Shape::SlopeDbPerOct(v) if !(v > 0.0 && v.is_finite()) => {
+            return Err(format!("Q, bandwidth or slope {} is not usable (must be above 0)", v));
+        }
+        _ => {}
+    }
+    let corner = is_shelf && !ty.ends_with('C');
+    Ok(Some(BiquadSpec { kind, freq, gain_db: gain, shape, corner }))
+}
+
+/// `Copy: L=0.5*L+0.5*R R=L C=-6dB*L+-6dB*R LFE=0`, exactly as Equalizer APO 1.4 reads it
+/// (filters/CopyFilterFactory.cpp, CopyFilter.cpp): assignments separated by spaces, summands
+/// by '+', factor '*' channel; a factor ending in "dB" is in decibels; a lone "0" or a number
+/// with '.' is a constant. An unknown target becomes a virtual channel. Returns the routes and
+/// notes about parts that have no effect here.
+fn parse_copy(args: &str, chans: &mut ChanMap) -> Result<(Vec<(usize, Vec<(usize, f64)>)>, Vec<String>), String> {
     let mut s = args.to_string();
-    for op in ["=", "+", "*"] {
-        while s.contains(&format!(" {}", op)) { s = s.replace(&format!(" {}", op), op); }
-        while s.contains(&format!("{} ", op)) { s = s.replace(&format!("{} ", op), op); }
+    if chans.extended {
+        // Extension: spaces around operators are allowed.
+        for op in ["=", "+", "*"] {
+            while s.contains(&format!(" {}", op)) { s = s.replace(&format!(" {}", op), op); }
+            while s.contains(&format!("{} ", op)) { s = s.replace(&format!("{} ", op), op); }
+        }
     }
     let mut routes = Vec::new();
+    let mut notes = Vec::new();
     for assign in s.split_whitespace() {
-        let (dest, expr) = assign.split_once('=').ok_or_else(|| format!("'{}' is not an assignment", assign))?;
-        let dest = chans.resolve(dest, true).ok_or_else(|| ignored(&format!("unknown channel '{}' (Equalizer APO knows L R C LFE RL RR RC SL SR and numbers; no virtual channels)", dest)))?;
+        let parts: Vec<&str> = assign.split('=').collect();
+        if parts.len() != 2 {
+            notes.push(format!("'{}' is not an assignment", assign));
+            continue;
+        }
+        let (target, mut source) = (parts[0], parts[1].to_string());
+        if target.is_empty() {
+            continue;
+        }
+        if chans.extended {
+            // Extension: "L-R" subtraction.
+            let chars: Vec<char> = source.chars().collect();
+            let mut norm = String::new();
+            for (k, c) in chars.iter().enumerate() {
+                if *c == '-' && k > 0 && !matches!(chars[k - 1], '+' | '*' | 'e' | 'E' | '=') { norm.push('+'); }
+                norm.push(*c);
+            }
+            source = norm;
+        }
         let mut sources = Vec::new();
-        // "L-R" / "0.5*L-0.5*R": subtraction is addition of a negated term (but not the
-        // minus of a negative factor or exponent such as "-6dB*L" or "1e-3*L").
-        let mut norm = String::new();
-        let chars: Vec<char> = expr.chars().collect();
-        for (k, c) in chars.iter().enumerate() {
-            if *c == '-' && k > 0 && !matches!(chars[k - 1], '+' | '*' | 'e' | 'E' | '=') {
-                if !chans.extended {
-                    return Err(ignored("Copy has no subtraction; write '+-0.5*R' or '+-6dB*R'"));
-                }
-                norm.push('+');
-            }
-            norm.push(*c);
-        }
-        for term in norm.split('+').filter(|t| !t.is_empty()) {
-            let (factor, ch) = match term.split_once('*') {
-                Some((f, c)) => (parse_factor(f).ok_or_else(|| format!("bad factor '{}'", f))?, c),
-                None => {
-                    // "-R" or plain "R"; a bare number is a constant, which we do not support.
-                    if let Some(c) = term.strip_prefix('-') { (-1.0, c) } else { (1.0, term) }
-                }
+        for summand in source.split('+') {
+            let f: Vec<&str> = summand.split('*').collect();
+            let (factor_s, channel) = match f.len() {
+                2 => (f[0], f[1]),
+                1 if f[0] == "0" || f[0].contains('.') => (f[0], ""),
+                1 => ("", f[0]),
+                _ => { notes.push(format!("'{}' has more than one '*'", summand)); continue; }
             };
-            // Constants need a decimal point ("0.0"); a plain number is a channel number.
-            if parse_num(ch).is_some() && (ch.contains('.') || ch.contains(',') || (chans.extended && channel_index(ch).is_none())) {
-                if parse_num(ch) == Some(0.0) { continue; } // "SUB=0.0" -> silence
-                return Err("constant values in Copy are not supported".into());
+            let mut factor = if factor_s.is_empty() { 1.0 } else { leading_num(factor_s) };
+            if factor_s.len() > 2 && factor_s[factor_s.len() - 2..].eq_ignore_ascii_case("db") {
+                factor = 10f64.powf(factor / 20.0);
             }
-            let src = chans.resolve(ch, true).ok_or_else(|| ignored(&format!("unknown channel '{}' (Equalizer APO knows L R C LFE RL RR RC SL SR and numbers; no virtual channels)", ch)))?;
-            sources.push((src, factor));
+            if channel.is_empty() {
+                if factor != 0.0 {
+                    notes.push(format!("constant value {} (a DC offset) is not applied", factor_s));
+                }
+                continue;
+            }
+            let (channel, factor) = match channel.strip_prefix('-') {
+                Some(c) if chans.extended => (c, -factor), // extension: "-R"
+                _ => (channel, factor),
+            };
+            match chans.lookup(channel) {
+                Some(c) => sources.push((c, factor)),
+                None => notes.push(format!("source channel '{}' does not exist at this point", channel)),
+            }
         }
+        // Equalizer APO creates a virtual channel for an unknown target.
+        let Some(dest) = chans.resolve(target, true) else {
+            notes.push(format!("too many channels for '{}'", target));
+            continue;
+        };
         routes.push((dest, sources));
     }
     if routes.is_empty() {
-        return Err("empty Copy command".into());
+        return Err(ignored("no valid assignment"));
     }
-    Ok(routes)
+    Ok((routes, notes))
 }
 
-fn parse_factor(f: &str) -> Option<f64> {
-    let t = f.trim();
-    if let Some(db) = t.strip_suffix("dB").or_else(|| t.strip_suffix("db")) {
-        return parse_num(db).map(|d| 10f64.powf(d / 20.0));
-    }
-    parse_num(t)
-}
 
 #[cfg(test)]
 mod tests {
@@ -943,7 +1057,7 @@ mod tests {
         );
         assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
         assert_eq!(cfg.stages.len(), 3);
-        assert_eq!(cfg.stages[0].1, Stage::Gain { gain_db: -6.5, channels: ChannelSel::All });
+        assert_eq!(cfg.stages[0].1, Stage::Gain { gain_db: -6.5, channels: ChannelSel::List(vec![0, 1]) });
         match &cfg.stages[1].1 {
             Stage::Biquad { spec, .. } => {
                 assert_eq!(spec.kind, FilterKind::Peaking);
@@ -961,7 +1075,7 @@ mod tests {
 
     #[test]
     fn channel_and_copy() {
-        let cfg = parse("Channel: L\nPreamp: -3 dB\nChannel: all\nCopy: L=0.5*L+0.5*R R = -6dB*L + R\n", None);
+        let cfg = parse("Channel: L\nPreamp: -3 dB\nChannel: all\nCopy: L=0.5*L+0.5*R R=-6dB*L+R\n", None);
         assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
         assert_eq!(cfg.stages[0].1, Stage::Gain { gain_db: -3.0, channels: ChannelSel::List(vec![0]) });
         match &cfg.stages[1].1 {
@@ -1011,6 +1125,31 @@ mod tests {
         assert_eq!(cfg.stages.len(), 4);
         match &cfg.stages[1].1 { Stage::Biquad { spec, .. } => assert_eq!(spec.freq, 1200.0), s => panic!("{:?}", s) }
         match &cfg.stages[2].1 { Stage::Biquad { spec, .. } => assert_eq!((spec.kind, spec.freq), (FilterKind::LowPass1, 18000.0)), s => panic!("{:?}", s) }
+    }
+
+    #[test]
+    fn equalizer_apo_defaults_from_its_source() {
+        let spec = |line: &str| match &parse(line, None).stages[0].1 { Stage::Biquad { spec, .. } => *spec, s => panic!("{:?}", s) };
+        // BiQuadFilterFactory.cpp: notch Q 30, shelf S 0.9, LP/HP Q 0.7071, slope = dB / 12.
+        assert_eq!(spec("Filter: ON NO Fc 1000 Hz").shape, Shape::Q(30.0));
+        let ls = spec("Filter: ON LS Fc 100 Hz Gain 6 dB");
+        assert_eq!((ls.shape, ls.corner), (Shape::SlopeDbPerOct(0.9 * 12.0), true));
+        let lsc = spec("Filter: ON LSC 12 dB Fc 100 Hz Gain 6 dB");
+        assert_eq!((lsc.shape, lsc.corner), (Shape::SlopeDbPerOct(12.0), false));
+        let ls6 = spec("Filter: ON LS 6dB Fc 100 Hz Gain 6 dB");
+        assert_eq!((ls6.kind, ls6.shape, ls6.corner), (FilterKind::LowShelf, Shape::SlopeDbPerOct(6.0), true));
+        assert_eq!(spec("Filter: ON LP Fc 100 Hz").shape, Shape::Q(std::f64::consts::FRAC_1_SQRT_2));
+        assert_eq!(spec("Filter: ON PK Fc 1000 Hz Gain 2 dB BW Oct 1").shape, Shape::BwOct(1.0));
+        // "1.000 Hz" = 1000 Hz (Room EQ Wizard thousands separator); comma decimals.
+        assert_eq!(spec("Filter: ON PK Fc 1.000 Hz Gain 1 dB Q 1").freq, 1000.0);
+        assert_eq!(spec("Filter: ON PK Fc 31,5 Hz Gain 1 dB Q 1").freq, 31.5);
+        // Gain is ignored for LP/HP/NO/AP; OFF lines and NONE add nothing.
+        assert_eq!(spec("Filter: ON HP Fc 80 Hz Gain 6 dB").gain_db, 0.0);
+        assert!(parse("Filter: OFF PK Fc 100 Hz Gain 3 dB Q 1\nFilter: ON None", None).stages.is_empty());
+        // Channel names depend on the layout: on stereo "C" only exists once Copy creates it.
+        let cfg = parse("Channel: C\nPreamp: -3 dB\nCopy: C=0.5*L+0.5*R\nChannel: C\nPreamp: -6 dB", None);
+        assert_eq!(cfg.stages[0].1, Stage::Gain { gain_db: -3.0, channels: ChannelSel::List(vec![]) });
+        assert_eq!(cfg.stages[2].1, Stage::Gain { gain_db: -6.0, channels: ChannelSel::List(vec![2]) });
     }
 
     #[test]

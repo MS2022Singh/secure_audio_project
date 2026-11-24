@@ -105,6 +105,7 @@ pub fn emit(stages: &[Stage], opt: &CamillaOptions, header_comment: &str) -> Str
                 match spec.shape {
                     Shape::Q(v) => { let _ = writeln!(filters, "      q: {}", num(v)); }
                     Shape::SlopeDbPerOct(s) => { let _ = writeln!(filters, "      slope: {}", num(s)); }
+                    Shape::BwOct(b) => { let _ = writeln!(filters, "      bandwidth: {}", num(b)); }
                 }
                 let chans = channels.indices(n);
                 if !chans.is_empty() { push_filter(&mut steps, chans, name); }

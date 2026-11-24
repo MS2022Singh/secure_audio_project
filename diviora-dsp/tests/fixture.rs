@@ -41,9 +41,9 @@ fn virtual_channel_multichannel_config_converts_and_runs() {
     }
 }
 
-/// Without `DivioraExtensions: on` the same file behaves like Equalizer APO 1.4.2: the lines
-/// it does not know (virtual channels, NOF, Channels=, per-channel Delay) are ignored, and
-/// only the standard lines (preamps, filters on L/R) remain.
+/// Without `DivioraExtensions: on` the file is read exactly as Equalizer APO 1.4 does
+/// (checked against its source): virtual channels created by Copy work and are mixed back,
+/// while NOF filters and per-channel Delay lines produce nothing.
 #[test]
 fn same_structure_without_extensions_behaves_like_equalizer_apo() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/");
@@ -51,11 +51,12 @@ fn same_structure_without_extensions_behaves_like_equalizer_apo() {
     let text: String = std::fs::read_to_string(format!("{}virtual_channels_config.txt", dir)).unwrap()
         .lines().filter(|l| l.trim() != "DivioraExtensions: on").map(|l| format!("{}\n", l)).collect();
     let cfg = eqapo::parse(&text, None);
-    assert!(cfg.warnings.iter().all(|w| w.reason.starts_with("ignored, as in Equalizer APO 1.4.2")), "{:?}", cfg.warnings);
-    assert!(cfg.warnings.iter().any(|w| w.text.starts_with("Copy: CX=")));
-    assert!(cfg.warnings.iter().any(|w| w.text.contains("NOF")));
-    assert!(cfg.warnings.iter().any(|w| w.text.starts_with("Delay: L=")));
-    // Only Preamp/PK/LP/HS lines on existing channels are left; no channel mixing at all.
+    let w = |pre: &str| cfg.warnings.iter().any(|w| w.text.starts_with(pre));
+    assert!(!w("Copy: CX="), "virtual channels must work: {:?}", cfg.warnings);
+    assert!(!w("Channel: RLX"), "virtual channels can be selected: {:?}", cfg.warnings);
+    assert!(w("Filter: ON NOF"), "NOF is not an Equalizer APO type");
+    assert!(w("Delay: L="), "per-channel Delay does nothing in Equalizer APO");
+    // Virtual channels are mixed back into L/R: channel mixing is present.
     let e = diviora_dsp::analysis::measure_effect(&text, 48000, 2, None);
-    assert!(e.channel_mixing.abs() < 0.05, "{:?}", e);
+    assert!(e.channel_mixing > 0.05, "{:?}", e);
 }
