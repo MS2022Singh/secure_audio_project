@@ -278,11 +278,15 @@ struct ParseState {
 pub struct ChanMap {
     virt: HashMap<String, usize>,
     next: usize,
+    /// Diviora extensions (`DivioraExtensions: on`): virtual channels, per-channel Delay,
+    /// `Channels=` in Filter lines, extra filter names. Off = exactly Equalizer APO 1.4.2,
+    /// which silently ignores such lines.
+    pub extended: bool,
 }
 
 impl ChanMap {
     pub fn new(device_channels: usize) -> ChanMap {
-        ChanMap { virt: HashMap::new(), next: device_channels.max(8).min(MAX_CHANNELS) }
+        ChanMap { virt: HashMap::new(), next: device_channels.max(8).min(MAX_CHANNELS), extended: false }
     }
     /// Index of a channel name; unknown names become new virtual channels when `create`.
     pub fn resolve(&mut self, name: &str, create: bool) -> Option<usize> {
@@ -296,7 +300,7 @@ impl ChanMap {
         }
         let valid = !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             && key.chars().next().map_or(false, |c| c.is_ascii_alphabetic());
-        if create && valid && self.next < MAX_CHANNELS {
+        if create && self.extended && valid && self.next < MAX_CHANNELS {
             let i = self.next;
             self.next += 1;
             self.virt.insert(key, i);
@@ -455,6 +459,11 @@ fn parse_into(
                 let mut chans = st.channels.clone();
                 let mut rest = Vec::new();
                 let mut bad = None;
+                let has_channels_param = args.split_whitespace().any(|t| t.len() > 9 && t[..9].eq_ignore_ascii_case("channels="));
+                if has_channels_param && !st.chans.extended {
+                    warn(cfg, file, lineno, line, ignored("Filter lines have no 'Channels=' parameter (select channels with a Channel: line)"));
+                    continue;
+                }
                 for tok in args.split_whitespace() {
                     if tok.len() > 9 && tok[..9].eq_ignore_ascii_case("channels=") {
                         match parse_channel_list(&tok[9..].replace(',', " "), &mut st.chans) {
@@ -469,7 +478,7 @@ fn parse_into(
                     warn(cfg, file, lineno, line, format!("unknown channel in '{}'", b));
                     continue;
                 }
-                match parse_filter(&rest.join(" ")) {
+                match parse_filter(&rest.join(" "), st.chans.extended) {
                     Ok(Some(FilterDef::Biquad(spec))) => cfg.stages.push((st.device.clone(), Stage::Biquad { spec, channels: chans })),
                     Ok(Some(FilterDef::Iir(b, a))) => cfg.stages.push((st.device.clone(), Stage::Iir { b, a, channels: chans })),
                     Ok(None) => {} // filter switched OFF
@@ -478,7 +487,7 @@ fn parse_into(
             }
             "channel" => match parse_channel_sel(args, &mut st.chans) {
                 Some(c) => st.channels = c,
-                None => warn(cfg, file, lineno, line, "unknown channel name"),
+                None => warn(cfg, file, lineno, line, ignored("unknown channel name; the previous channel selection stays (Equalizer APO knows L R C LFE RL RR RC SL SR and numbers)")),
             },
             "device" => {
                 let a = args.trim();
@@ -530,6 +539,10 @@ fn parse_into(
             }
             "stage" => {} // Diviora runs as one stream effect; the placement hint has no effect
             "diviorafile" => {} // embedded file, collected before parsing
+            "divioraextensions" => {
+                let a = args.trim().to_lowercase();
+                st.chans.extended = matches!(a.as_str(), "on" | "true" | "yes" | "1");
+            }
             "graphiceq" => match parse_graphic_eq(args) {
                 Ok(points) => cfg.stages.push((st.device.clone(), Stage::GraphicEq { points, channels: st.channels.clone() })),
                 Err(e) => warn(cfg, file, lineno, line, e),
@@ -549,11 +562,16 @@ fn parse_into(
             }
             "loudnesscorrection" => warn(cfg, file, lineno, line, "LoudnessCorrection follows the Windows volume slider and is not supported; use filters instead"),
             "vst" => warn(cfg, file, lineno, line, "VST plug-ins cannot be loaded into the Diviora engine"),
-            _ => warn(cfg, file, lineno, line, "unknown command"),
+            _ => warn(cfg, file, lineno, line, ignored("unknown command")),
         }
     }
 }
 
+
+/// Reason text for lines Equalizer APO 1.4.2 itself silently ignores.
+fn ignored(why: &str) -> String {
+    format!("ignored, as in Equalizer APO 1.4.2: {}", why)
+}
 
 fn cond_value(args: &str, st: &ParseState, cfg: &mut EqApoConfig, file: &str, lineno: usize, line: &str) -> bool {
     match expr::eval(args, &st.vars) {
@@ -632,6 +650,9 @@ fn parse_delay(s: &str, chans: &mut ChanMap) -> Result<Vec<(f64, Option<ChannelS
         let unit = if !glued.is_empty() { glued } else { toks.get(1).map(|u| u.to_string()).unwrap_or_default() };
         return Ok(vec![(to_ms(v, &unit)?, None)]);
     }
+    if !chans.extended {
+        return Err(ignored("Delay takes one value for the selected channels ('Delay: 10 ms'), not CHANNEL=value pairs"));
+    }
     let mut out = Vec::new();
     let mut i = 0;
     while i < toks.len() {
@@ -658,6 +679,7 @@ fn channel_index(name: &str) -> Option<usize> {
     }
     match n.as_str() {
         "LFE" => Some(3),
+        "RC" => Some(4),
         "FL" => Some(0),
         "FR" => Some(1),
         "FC" => Some(2),
@@ -722,16 +744,16 @@ fn parse_iir(toks: &[&str]) -> Result<FilterDef, String> {
     Ok(FilterDef::Iir(b.iter().map(|v| v / a0).collect(), a.iter().map(|v| v / a0).collect()))
 }
 
-fn parse_filter(args: &str) -> Result<Option<FilterDef>, String> {
+fn parse_filter(args: &str, extended: bool) -> Result<Option<FilterDef>, String> {
     let toks: Vec<&str> = args.split_whitespace().collect();
     if let Some(p) = toks.iter().position(|t| t.eq_ignore_ascii_case("IIR")) {
         if toks.first().map_or(false, |t| t.eq_ignore_ascii_case("OFF")) { return Ok(None); }
         return parse_iir(&toks[p + 1..]).map(Some);
     }
-    parse_biquad(&toks).map(|o| o.map(FilterDef::Biquad))
+    parse_biquad(&toks, extended).map(|o| o.map(FilterDef::Biquad))
 }
 
-fn parse_biquad(toks: &[&str]) -> Result<Option<BiquadSpec>, String> {
+fn parse_biquad(toks: &[&str], extended: bool) -> Result<Option<BiquadSpec>, String> {
     let mut i = 0;
     match toks.first().map(|t| t.to_uppercase()) {
         Some(ref t) if t == "ON" => i += 1,
@@ -740,6 +762,11 @@ fn parse_biquad(toks: &[&str]) -> Result<Option<BiquadSpec>, String> {
     }
     let ty = toks.get(i).ok_or("missing filter type")?.to_uppercase();
     i += 1;
+    // Equalizer APO 1.4.2's filter types; anything else it silently ignores.
+    const EQAPO_TYPES: &[&str] = &["PK", "MODAL", "PEQ", "LP", "LPQ", "HP", "HPQ", "BP", "LS", "LSC", "HS", "HSC", "NO", "AP", "NONE"];
+    if !extended && !EQAPO_TYPES.contains(&ty.as_str()) {
+        return Err(ignored(&format!("filter type '{}' does not exist in Equalizer APO", ty)));
+    }
 
     let kind = match ty.as_str() {
         "PK" | "PEQ" | "PEAK" | "PEAKING" | "MODAL" | "EQ" => FilterKind::Peaking,
@@ -857,7 +884,7 @@ fn parse_copy(args: &str, chans: &mut ChanMap) -> Result<Vec<(usize, Vec<(usize,
     let mut routes = Vec::new();
     for assign in s.split_whitespace() {
         let (dest, expr) = assign.split_once('=').ok_or_else(|| format!("'{}' is not an assignment", assign))?;
-        let dest = chans.resolve(dest, true).ok_or_else(|| format!("unknown channel '{}'", dest))?;
+        let dest = chans.resolve(dest, true).ok_or_else(|| ignored(&format!("unknown channel '{}' (Equalizer APO knows L R C LFE RL RR RC SL SR and numbers; no virtual channels)", dest)))?;
         let mut sources = Vec::new();
         // "L-R" / "0.5*L-0.5*R": subtraction is addition of a negated term (but not the
         // minus of a negative factor or exponent such as "-6dB*L" or "1e-3*L").
@@ -865,6 +892,9 @@ fn parse_copy(args: &str, chans: &mut ChanMap) -> Result<Vec<(usize, Vec<(usize,
         let chars: Vec<char> = expr.chars().collect();
         for (k, c) in chars.iter().enumerate() {
             if *c == '-' && k > 0 && !matches!(chars[k - 1], '+' | '*' | 'e' | 'E' | '=') {
+                if !chans.extended {
+                    return Err(ignored("Copy has no subtraction; write '+-0.5*R' or '+-6dB*R'"));
+                }
                 norm.push('+');
             }
             norm.push(*c);
@@ -877,11 +907,12 @@ fn parse_copy(args: &str, chans: &mut ChanMap) -> Result<Vec<(usize, Vec<(usize,
                     if let Some(c) = term.strip_prefix('-') { (-1.0, c) } else { (1.0, term) }
                 }
             };
-            if parse_num(ch).is_some() && channel_index(ch).is_none() {
-                if parse_num(ch) == Some(0.0) { continue; } // "SUB=0" -> silence
+            // Constants need a decimal point ("0.0"); a plain number is a channel number.
+            if parse_num(ch).is_some() && (ch.contains('.') || ch.contains(',') || (chans.extended && channel_index(ch).is_none())) {
+                if parse_num(ch) == Some(0.0) { continue; } // "SUB=0.0" -> silence
                 return Err("constant values in Copy are not supported".into());
             }
-            let src = chans.resolve(ch, true).ok_or_else(|| format!("unknown channel '{}'", ch))?;
+            let src = chans.resolve(ch, true).ok_or_else(|| ignored(&format!("unknown channel '{}' (Equalizer APO knows L R C LFE RL RR RC SL SR and numbers; no virtual channels)", ch)))?;
             sources.push((src, factor));
         }
         routes.push((dest, sources));
@@ -961,7 +992,7 @@ mod tests {
 
     #[test]
     fn copy_with_subtraction_and_wide_ranges() {
-        let cfg = parse("Copy: L=L-R R=0.5*R-0.5*L C=-6dB*L+-6dB*R\nFilter: ON PK Fc 30000 Hz Gain 48 dB Q 150\n", None);
+        let cfg = parse("DivioraExtensions: on\nCopy: L=L-R R=0.5*R-0.5*L C=-6dB*L+-6dB*R\nFilter: ON PK Fc 30000 Hz Gain 48 dB Q 150\n", None);
         assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
         match &cfg.stages[0].1 {
             Stage::Mix { routes } => {
@@ -975,7 +1006,7 @@ mod tests {
 
     #[test]
     fn editor_variants() {
-        let cfg = parse("Filter1: ON PK Fc 1000Hz Gain 3dB Q 1.41\nFilter 2: ON PK Fc 1.2 kHz Gain -2 dB Q 2\nFilter3: ON LP1 Fc 18kHz\nFilter: ON NOTCH Fc 50 Hz Q 30\n", None);
+        let cfg = parse("DivioraExtensions: on\nFilter1: ON PK Fc 1000Hz Gain 3dB Q 1.41\nFilter 2: ON PK Fc 1.2 kHz Gain -2 dB Q 2\nFilter3: ON LP1 Fc 18kHz\nFilter: ON NOTCH Fc 50 Hz Q 30\n", None);
         assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
         assert_eq!(cfg.stages.len(), 4);
         match &cfg.stages[1].1 { Stage::Biquad { spec, .. } => assert_eq!(spec.freq, 1200.0), s => panic!("{:?}", s) }

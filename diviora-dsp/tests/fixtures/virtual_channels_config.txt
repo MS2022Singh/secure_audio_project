@@ -1,4 +1,5 @@
 # Same structure as a real multichannel Equalizer APO 1.4.2 configuration (made-up values).
+DivioraExtensions: on
 Preamp: -6 dB
 Filter: ON NOF Fc 100 Hz Channels=L,R Q 2
 Filter: ON PK Fc 3000 Hz Gain 2 dB Q 1

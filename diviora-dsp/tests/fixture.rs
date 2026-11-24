@@ -40,3 +40,21 @@ fn virtual_channel_multichannel_config_converts_and_runs() {
         assert!(energy > 1.0, "{} ch: output should not be silent", ch);
     }
 }
+
+/// Without `DivioraExtensions: on` the same file behaves like Equalizer APO 1.4.2: the lines
+/// it does not know (virtual channels, NOF, Channels=, per-channel Delay) are ignored, and
+/// only the standard lines (preamps, filters on L/R) remain.
+#[test]
+fn same_structure_without_extensions_behaves_like_equalizer_apo() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/");
+    let text = std::fs::read_to_string(format!("{}virtual_channels_config.txt", dir)).unwrap()
+        .replace("DivioraExtensions: on\n", "");
+    let cfg = eqapo::parse(&text, None);
+    assert!(cfg.warnings.iter().all(|w| w.reason.starts_with("ignored, as in Equalizer APO 1.4.2")), "{:?}", cfg.warnings);
+    assert!(cfg.warnings.iter().any(|w| w.text.starts_with("Copy: CX=")));
+    assert!(cfg.warnings.iter().any(|w| w.text.contains("NOF")));
+    assert!(cfg.warnings.iter().any(|w| w.text.starts_with("Delay: L=")));
+    // Only Preamp/PK/LP/HS lines on existing channels are left; no channel mixing at all.
+    let e = diviora_dsp::analysis::measure_effect(&text, 48000, 2, None);
+    assert!(e.channel_mixing.abs() < 0.05, "{:?}", e);
+}

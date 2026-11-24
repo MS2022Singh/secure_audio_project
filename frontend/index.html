@@ -258,10 +258,11 @@
                         <!-- DYNAMIC DYNAMIC ESTIMATED PROPERTIES (NON-DUMMY) -->
                         <div class="analysis-box">
                             <h4 style="margin:0 0 10px 0; font-size: 13px; color: var(--primary-green);">Estimated properties</h4>
-                            <div class="est-label"><span>Peak gain:</span><span class="est-value" id="valPeakGain">0.0 dB</span></div>
-                            <div class="est-label"><span>Latency:</span><span class="est-value" id="valLatency">87.4 ms (0.09 s.)</span></div>
-                            <div class="est-label"><span>Init. time:</span><span class="est-value" id="valInitTime">1.1 ms</span></div>
-                            <div class="est-label"><span>CPU usage:</span><span class="est-value" id="valCpuUsage">0.1 % (one core)</span></div>
+                            <div class="est-label"><span>Peak gain:</span><span class="est-value" id="valPeakGain">–</span></div>
+                            <div class="est-label"><span>Latency:</span><span class="est-value" id="valLatency">–</span></div>
+                            <div class="est-label"><span>Init. time:</span><span class="est-value" id="valInitTime">–</span></div>
+                            <div class="est-label"><span>CPU usage:</span><span class="est-value" id="valCpuUsage">–</span></div>
+                            <div id="lblAnalysisNote" style="font-size: 11.5px; color: var(--text-muted); margin-top: 8px; line-height: 1.45;"></div>
                         </div>
                     </div>
 
@@ -306,7 +307,7 @@
 
                     <div id="boxApoWarningsWrap" style="display:none;">
                     <div style="display:flex; justify-content: space-between; align-items:center; margin-bottom: 6px;">
-                        <span style="font-size: 12.5px; color: #ffb3bd; font-weight: 700;">Lines not converted (numbers hidden as # so this can be shared)</span>
+                        <span style="font-size: 12.5px; color: #ffb3bd; font-weight: 700;">Lines ignored or not converted (numbers hidden as # so this can be shared)</span>
                         <button class="btn-dark" id="btnToggleWarnValues" style="padding: 6px 12px; font-size: 12px;">Show values</button>
                     </div>
                     <pre id="boxApoWarnings" style="white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; background: #1a0f12; border: 1px solid var(--error-red); color: #ffb3bd; border-radius: 6px; padding: 10px 12px; font-size: 12px; margin: 0 0 14px 0; user-select: text;"></pre>
@@ -624,20 +625,28 @@
         // (Like Equalizer APO's analysis panel, these settings do not change the processing.)
         document.getElementById('btnApplyAnalysisSettings').addEventListener('click', async () => {
             const a = await updateDynamicEstimatedProperties();
-            if (!a) { alert("Analysis failed."); return; }
-            const note = a.stages ? `${a.stages} processing stage(s) analysed.` : "No configuration uploaded yet: values are for pass-through.";
-            alert(`Analysis updated. ${note}` + (a.warnings.length ? `\nNot supported: ${a.warnings.length} line(s).` : ""));
+            const note = document.getElementById('lblAnalysisNote');
+            if (!a) { note.innerText = "Analysis failed."; note.style.color = "var(--error-red)"; return; }
+            note.style.color = "var(--text-muted)";
+            note.innerText = (a.stages ? `${a.stages} processing stage(s) analysed for the selected device, layout and channel.`
+                                       : "No configuration uploaded: values are for unprocessed sound.")
+                + (a.warnings.length ? ` ${a.warnings.length} line(s) ignored or not converted (see the list under the upload box).` : "");
         });
 
         // Disable Matrix: equalizer off (pass-through); the uploaded file is kept.
         document.getElementById('btnDisableAnalysisSettings').addEventListener('click', async () => {
             try {
-                const msg = await invokeCmd('upload_apo_profile', { profileData: activeApoProfilePayload || "REMOVE", isEnabled: false });
+                // Disable only (never remove): the uploaded configuration stays in Diviora.
+                const msg = await invokeCmd('upload_apo_profile', { profileData: "", isEnabled: false });
                 document.getElementById('toggleApoEnableConfig').checked = false;
                 document.getElementById('lblApoToggleStatus').innerText = "DISABLED";
                 document.getElementById('lblApoToggleStatus').style.color = "var(--error-red)";
-                alert(msg);
-            } catch (err) { alert("Could not disable: " + err); }
+                document.getElementById('lblApoScriptStatus').innerText = "● " + msg;
+                document.getElementById('lblAnalysisNote').innerText = "Disabled: Windows audio plays unprocessed sound. Switch it back on with the ENABLED toggle.";
+            } catch (err) {
+                document.getElementById('lblAnalysisNote').innerText = "Could not disable: " + err;
+                document.getElementById('lblAnalysisNote').style.color = "var(--error-red)";
+            }
         });
 
         // TAURI NATIVE DRAG & DROP
@@ -737,6 +746,7 @@
                     isMasterAuthenticated = true;
                     document.getElementById('lblMasterAuthError').innerText = "";
                     refreshElevationHint();
+                    updateDynamicEstimatedProperties();
                     refreshLicenceState('developer');
                 } else {
                     document.getElementById('lblMasterAuthError').innerText = "Invalid Access Token";

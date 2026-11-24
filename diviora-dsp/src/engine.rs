@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn virtual_channels_per_channel_delay_and_filter_channels() {
         // Mid channel CX = (L+R)/2, delayed 1 sample, mixed back into L only.
-        let text = "Copy: CX=0.5*L+0.5*R\nDelay: CX=1 samples L=0ms\nFilter: ON NOF Fc 50 Hz Q 30 Channels=R\nCopy: L=L+CX\n";
+        let text = "DivioraExtensions: on\nCopy: CX=0.5*L+0.5*R\nDelay: CX=1 samples L=0ms\nFilter: ON NOF Fc 50 Hz Q 30 Channels=R\nCopy: L=L+CX\n";
         let cfg = parse(text, None);
         assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
         let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 1);
@@ -465,7 +465,7 @@ mod tests {
         // Virtual channels never reach the output; a stereo stream stays stereo.
         assert_eq!(e.channels(), 2);
         // Notch on R only (50 Hz removed from R, L untouched).
-        let cfg = parse("Filter: ON NOF Fc 1000 Hz Q 2 Channels=R", None);
+        let cfg = parse("DivioraExtensions: on\nFilter: ON NOF Fc 1000 Hz Q 2 Channels=R", None);
         let mut e = Engine::compile(&cfg.stages_for_all_devices(), 48000, 2, 1);
         let sr = 48000.0;
         let mut buf: Vec<f32> = (0..96000).flat_map(|i| { let v = (0.5 * (2.0 * PI * 1000.0 * i as f64 / sr).sin()) as f32; [v, v] }).collect();

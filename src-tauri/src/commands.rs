@@ -318,7 +318,8 @@ pub fn upload_apo_profile(profile_data: String, is_enabled: bool, _manager: Stat
             speakers));
     }
     if !summary.warnings.is_empty() {
-        msg.push_str(&format!("\n{} line(s) not supported:\n{}", summary.warnings.len(),
+        let ignored = summary.warnings.iter().filter(|w| w.reason.starts_with("ignored, as in Equalizer APO")).count();
+        msg.push_str(&format!("\n{} line(s) ignored or not converted ({} of them are ignored by Equalizer APO 1.4.2 too):\n{}", summary.warnings.len(), ignored,
             summary.warnings.iter().map(|w| format!("• {}", w)).collect::<Vec<_>>().join("\n")));
     }
     Ok(msg)
@@ -963,6 +964,8 @@ pub fn perform_real_dll_apo_audit() -> Result<serde_json::Value, String> {
     let msg_str = match hook_status {
         "ACTIVE" => format!("DivioraAPO in audiodg.exe | Locked config applied ({} stages) | Filtered frames: {}",
             if active_stages >= 0 { active_stages.to_string() } else { "?".into() }, filtered_frames),
+        "PASSTHROUGH_ACTIVE" if !config_loaded => format!(
+            "Engine installed and idle: no configuration locked, sound is unchanged | Frames passed through: {}", processed_frames),
         "PASSTHROUGH_ACTIVE" if config_loaded && active_stages == 0 => format!(
             "DivioraAPO in audiodg.exe | Locked config loaded, but NONE of it applies to \"{}\" (check its Device: lines) | Frames: {}",
             engine_device, processed_frames),

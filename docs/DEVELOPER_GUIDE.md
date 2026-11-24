@@ -66,11 +66,15 @@ Open it with **Ctrl + Shift + D** (on a phone: tap the **DIVIORA** logo 7 times 
   login for 60 s, and the count survives restarting the app.
 - **Upload config:** Equalizer APO 1.4.x `.txt`. Select the configuration **together with** any
   files it uses (its `Include:` .txt files and `Convolution:` .wav impulse responses, multi-select
-  in the file picker); they are embedded in the locked configuration. Supported: Preamp, all
-  Filter types (incl. raw IIR and first-order shelves), GraphicEQ, Convolution, Channel (up to
-  32), Copy, Delay, Device, Include, Stage, If/ElseIf/Else/EndIf, Eval and backtick expressions
-  (evaluated for the real sample rate, channels and device). Only VST and LoudnessCorrection are
-  not supported; they are listed after upload, never silently dropped.
+  in the file picker); they are embedded in the locked configuration. Diviora follows
+  Equalizer APO 1.4.2 exactly: Preamp, all its Filter types (incl. IIR, LS/HS 6dB/12dB), GraphicEQ,
+  Convolution, Channel (L R C LFE RL RR RC SL SR or numbers), Copy, Delay, Device, Include, Stage,
+  If/ElseIf/Else/EndIf, Eval and backtick expressions (for the real sample rate, channels and
+  device). Lines Equalizer APO silently ignores (unknown filter types such as NOF, `Channels=` in
+  Filter lines, per-channel `Delay: L=…`, virtual channel names in Copy/Channel) are ignored too and
+  listed as "ignored, as in Equalizer APO 1.4.2". Only VST and LoudnessCorrection are not supported.
+  Diviora's own extensions (virtual channels, per-channel Delay, `Channels=`, NOF as a notch) apply
+  only if the file contains the line `DivioraExtensions: on`.
 - **Updates without clutter:** Windows installs new versions by itself (start-up and every 6 hours).
   Phones show **Download update**: the app downloads it into its own storage and opens Android's
   installer (tap **Update**); nothing is saved to Downloads and nothing needs uninstalling. The
