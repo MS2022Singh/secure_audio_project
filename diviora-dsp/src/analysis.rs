@@ -299,3 +299,150 @@ mod effect_tests {
         assert!(e.channel_mixing > 0.5, "{:?}", e);
     }
 }
+
+/// Deterministic test sound for comparisons: independent white noise per channel, -20 dBFS RMS.
+pub fn test_noise(sample_rate: u32, channels: usize, seconds: f64) -> Vec<f32> {
+    let frames = (sample_rate as f64 * seconds) as usize;
+    let mut seed: u64 = 0x9E3779B97F4A7C15;
+    let mut rnd = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; ((seed >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0 };
+    (0..frames * channels).map(|_| (rnd() * 0.1 * 3f64.sqrt()) as f32).collect()
+}
+
+/// Gain (dB) of `out` relative to `inp` in 20 log-spaced bands from 50 Hz to 16 kHz.
+pub fn band_gains(inp: &[f64], out: &[f64], sample_rate: u32) -> Vec<(f64, f64)> {
+    use realfft::RealFftPlanner;
+    let n = 8192usize;
+    let fft = RealFftPlanner::<f64>::new().plan_fft_forward(n);
+    let bands: Vec<(f64, f64)> = (0..20).map(|i| {
+        let lo = 50.0 * (16000.0f64 / 50.0).powf(i as f64 / 20.0);
+        let hi = 50.0 * (16000.0f64 / 50.0).powf((i + 1) as f64 / 20.0);
+        (lo, hi)
+    }).collect();
+    let energy = |x: &[f64]| -> Vec<f64> {
+        let mut e = vec![1e-30; bands.len()];
+        let mut buf = vec![0.0f64; n];
+        let mut spec = fft.make_output_vec();
+        for seg in x.chunks_exact(n) {
+            for (k, (b, v)) in buf.iter_mut().zip(seg).enumerate() {
+                *b = v * (0.5 - 0.5 * (2.0 * std::f64::consts::PI * k as f64 / n as f64).cos());
+            }
+            let _ = fft.process(&mut buf, &mut spec);
+            for (bi, (lo, hi)) in bands.iter().enumerate() {
+                let (a, b) = ((lo * n as f64 / sample_rate as f64) as usize, (hi * n as f64 / sample_rate as f64) as usize);
+                for s in spec.iter().take(b.min(n / 2) + 1).skip(a.max(1)) { e[bi] += s.norm_sqr(); }
+            }
+        }
+        e
+    };
+    let (ei, eo) = (energy(inp), energy(out));
+    bands.iter().zip(ei.iter().zip(eo.iter()))
+        .map(|((lo, hi), (a, b))| ((lo * hi).sqrt(), 10.0 * (b / a).log10()))
+        .collect()
+}
+
+/// One channel of an interleaved buffer, skipping the first `skip` frames.
+pub fn channel(buf: &[f32], ch: usize, c: usize, skip: usize) -> Vec<f64> {
+    buf.iter().skip(skip * ch + c).step_by(ch).map(|v| *v as f64).collect()
+}
+
+/// Comparison of two processed versions (A = reference, B = candidate) of the same input.
+#[derive(Debug, Clone)]
+pub struct Comparison {
+    pub level_a_db: Vec<f64>,
+    pub level_b_db: Vec<f64>,
+    /// Per channel: (band centre Hz, gain A dB, gain B dB).
+    pub bands: Vec<Vec<(f64, f64, f64)>>,
+    /// Largest band-gain difference, any channel (dB).
+    pub max_band_diff_db: f64,
+    /// Difference between the waveforms relative to A (dB; below -40 = practically identical),
+    /// after aligning B to A by `lag_frames`.
+    pub residual_db: Vec<f64>,
+    pub lag_frames: i64,
+    pub mixing_a: f64,
+    pub mixing_b: f64,
+}
+
+pub fn compare(input: &[f32], a: &[f32], b: &[f32], sample_rate: u32, ch: usize) -> Comparison {
+    let ch = ch.max(1);
+    let skip = (sample_rate as usize / 2).min(input.len() / ch / 4);
+    let rms = |v: &[f64]| (v.iter().map(|x| x * x).sum::<f64>() / v.len().max(1) as f64).sqrt();
+    let corr = |x: &[f64], y: &[f64]| {
+        let n = x.len().min(y.len());
+        let (mx, my) = (x[..n].iter().sum::<f64>() / n.max(1) as f64, y[..n].iter().sum::<f64>() / n.max(1) as f64);
+        let cov: f64 = (0..n).map(|i| (x[i] - mx) * (y[i] - my)).sum();
+        let vx: f64 = (0..n).map(|i| (x[i] - mx).powi(2)).sum();
+        let vy: f64 = (0..n).map(|i| (y[i] - my).powi(2)).sum();
+        if vx > 0.0 && vy > 0.0 { cov / (vx * vy).sqrt() } else { 0.0 }
+    };
+    // Align B to A (latency differences, e.g. linear-phase filters): best lag on channel 0.
+    let a0 = channel(a, ch, 0, skip);
+    let b0 = channel(b, ch, 0, skip);
+    let probe = a0.len().min(b0.len()).min(sample_rate as usize).saturating_sub(4096);
+    let mut best = (0i64, f64::MIN);
+    for lag in -4096i64..=4096 {
+        let mut s = 0.0;
+        for i in (4096..probe).step_by(4) {
+            let j = i as i64 + lag;
+            if j >= 0 && (j as usize) < b0.len() { s += a0[i] * b0[j as usize]; }
+        }
+        if s > best.1 { best = (lag, s); }
+    }
+    let lag = best.0;
+    let mut out = Comparison { level_a_db: vec![], level_b_db: vec![], bands: vec![], max_band_diff_db: 0.0,
+        residual_db: vec![], lag_frames: lag, mixing_a: 0.0, mixing_b: 0.0 };
+    for c in 0..ch {
+        let i = channel(input, ch, c, skip);
+        let (ac, bc) = (channel(a, ch, c, skip), channel(b, ch, c, skip));
+        out.level_a_db.push(20.0 * (rms(&ac).max(1e-12) / rms(&i).max(1e-12)).log10());
+        out.level_b_db.push(20.0 * (rms(&bc).max(1e-12) / rms(&i).max(1e-12)).log10());
+        let ga = band_gains(&i, &ac, sample_rate);
+        let gb = band_gains(&i, &bc, sample_rate);
+        let rows: Vec<(f64, f64, f64)> = ga.iter().zip(gb.iter()).map(|((f, x), (_, y))| (*f, *x, *y)).collect();
+        for (_, x, y) in &rows { out.max_band_diff_db = out.max_band_diff_db.max((x - y).abs()); }
+        out.bands.push(rows);
+        // Residual after alignment.
+        let n = ac.len().min(bc.len());
+        let (mut e, mut r) = (0.0, 0.0);
+        for k in 0..n {
+            let j = k as i64 + lag;
+            if j < 0 || j as usize >= bc.len() { continue; }
+            let d = ac[k] - bc[j as usize];
+            r += d * d;
+            e += ac[k] * ac[k];
+        }
+        out.residual_db.push(if e > 0.0 { 10.0 * (r.max(1e-30) / e).log10() } else { -120.0 });
+    }
+    if ch >= 2 {
+        out.mixing_a = corr(&channel(a, ch, 0, skip), &channel(a, ch, 1, skip));
+        out.mixing_b = corr(&channel(b, ch, 0, skip), &channel(b, ch, 1, skip));
+    }
+    out
+}
+
+#[cfg(test)]
+mod compare_tests {
+    use super::*;
+
+    #[test]
+    fn identical_and_different_processing() {
+        let inp = test_noise(48000, 2, 3.0);
+        let run = |cfg: &str| {
+            let c = eqapo::parse(cfg, None);
+            let mut e = Engine::compile(&c.stages_for_all_devices(), 48000, 2, 0);
+            let mut o = inp.clone();
+            e.process_interleaved(&mut o);
+            o
+        };
+        let a = run("Preamp: -3 dB\nFilter: ON PK Fc 1000 Hz Gain 6 dB Q 1");
+        let same = compare(&inp, &a, &a.clone(), 48000, 2);
+        assert!(same.residual_db.iter().all(|r| *r < -100.0) && same.max_band_diff_db < 0.01, "{:?}", same.residual_db);
+        let b = run("Preamp: -3 dB");
+        let diff = compare(&inp, &a, &b, 48000, 2);
+        assert!(diff.max_band_diff_db > 4.0, "{}", diff.max_band_diff_db);
+        // A pure delay is recognised as a time offset, not as a difference.
+        let d = run("Preamp: -3 dB\nFilter: ON PK Fc 1000 Hz Gain 6 dB Q 1\nDelay: 100 samples");
+        let lagged = compare(&inp, &a, &d, 48000, 2);
+        assert_eq!(lagged.lag_frames, 100);
+        assert!(lagged.residual_db.iter().all(|r| *r < -60.0), "{:?}", lagged.residual_db);
+    }
+}

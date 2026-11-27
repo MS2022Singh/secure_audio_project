@@ -307,7 +307,7 @@
 
                     <div id="boxApoWarningsWrap" style="display:none;">
                     <div style="display:flex; justify-content: space-between; align-items:center; margin-bottom: 6px;">
-                        <span style="font-size: 12.5px; color: #ffb3bd; font-weight: 700;">Lines ignored or not converted (numbers hidden as # so this can be shared)</span>
+                        <span style="font-size: 12.5px; color: #ffb3bd; font-weight: 700;">Lines that have no effect in Equalizer APO 1.4.2 either — not errors (numbers hidden as #)</span>
                         <button class="btn-dark" id="btnToggleWarnValues" style="padding: 6px 12px; font-size: 12px;">Show values</button>
                     </div>
                     <pre id="boxApoWarnings" style="white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; background: #1a0f12; border: 1px solid var(--error-red); color: #ffb3bd; border-radius: 6px; padding: 10px 12px; font-size: 12px; margin: 0 0 14px 0; user-select: text;"></pre>
@@ -316,12 +316,14 @@
                         • AUDIODG HOOK STATUS: checking…
                     </div>
 
-                    <div style="display: flex; gap: 12px; margin-top: 18px;">
+                    <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px;">
                         <button class="btn-outline-green" id="btnDownloadApoReport">📄 Download Hardware Matrix Report (.txt)</button>
                         <button class="btn-outline-green" id="btnExportPs1Script">🛠️ Install / Repair System-Wide APO</button>
                         <button class="btn-outline-green" id="btnRestartAudio">🔄 Restart Windows Audio</button>
                         <button class="btn-outline-green" id="btnVerifySystemAudio">🔍 Verify System Audio (config + watermark)</button>
                         <button class="btn-outline-green" id="btnExplainConfig">🧭 Explain Configuration (no values)</button>
+                        <button class="btn-outline-green" id="btnCompareKit">🧪 Compare with Equalizer APO 1.4.2 — 1. Create test files</button>
+                        <button class="btn-outline-green" id="btnCompareRun">🧪 2. Compare</button>
                     </div>
                 </div>
 
@@ -412,14 +414,6 @@
                     <textarea id="txtDevAccessFile" readonly style="display:none; width: 100%; box-sizing: border-box; margin-top: 12px; height: 140px; background: #0c0d14; color: var(--primary-green); border: 1px solid var(--border-color); border-radius: 6px; font-family: monospace; font-size: 11.5px; padding: 10px;"></textarea>
                 </div>
 
-                <div class="card">
-                    <h3 style="margin: 0 0 12px 0;">🐙 Auto Project Sync to Git & GitHub (MS2022Singh)</h3>
-                    <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
-                        <input type="text" id="txtGitCommitMsg" placeholder="Commit Message" value="Diviora Engine Update" />
-                        <button class="btn-green" id="btnPushToGit" style="white-space: nowrap;">Push to GitHub</button>
-                    </div>
-                    <div id="lblGitStatus" style="font-size: 12px; color: var(--primary-green); font-family: monospace;"></div>
-                </div>
 
                 <div class="card">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -1118,17 +1112,6 @@
             refreshVersionInfo();
         });
 
-        // GitHub Sync
-        document.getElementById('btnPushToGit').addEventListener('click', async () => {
-            const msg = document.getElementById('txtGitCommitMsg').value || "Project Update";
-            document.getElementById('lblGitStatus').innerText = "Pushing to GitHub (MS2022Singh)...";
-            try {
-                const res = await invokeCmd('sync_project_to_github', { commitMsg: msg });
-                document.getElementById('lblGitStatus').innerText = "✔ " + res;
-            } catch (err) {
-                document.getElementById('lblGitStatus').innerText = "✖ " + err;
-            }
-        });
 
         // APO Profile Sync & State Toggle
         document.getElementById('toggleApoEnableConfig').addEventListener('change', async (e) => {
@@ -1248,7 +1231,7 @@
             if (nl >= 0) {
                 apoWarningsText = msg.slice(nl + 1);
                 showApoWarnings(false);
-                alert(msg.slice(0, nl) + "\nSome lines are not supported: the list is shown below the upload box (values hidden, safe to screenshot).");
+                alert(msg.slice(0, nl) + "\nSome lines have no effect (also in Equalizer APO 1.4.2): see the list below the upload box. Use Compare with Equalizer APO to check against the real thing.");
             } else {
                 apoWarningsText = "";
                 document.getElementById('boxApoWarningsWrap').style.display = 'none';
@@ -1322,17 +1305,46 @@
             return h;
         }
         let lastExplainHtml = "";
+        let lastReportTitle = "How Equalizer APO 1.4 processes this configuration";
+        function compareHtml(x) {
+            const vc = { same: ['#1db954', 'Diviora sounds the same as Equalizer APO 1.4.2'], close: ['#e0a526', 'Diviora is very close to Equalizer APO 1.4.2 (under 0.5 dB anywhere)'], different: ['#e91429', 'Diviora sounds DIFFERENT from Equalizer APO 1.4.2'] }[x.verdict];
+            const f1 = (v) => (v >= 0 ? '+' : '') + v.toFixed(1);
+            let h = `<div style="border:2px solid ${vc[0]};border-radius:8px;padding:10px 14px;font-size:14px;"><b style="color:${vc[0]}">${vc[1]}</b><br><span style="font-size:12px;color:#a7a7a7;">Largest difference in any band: ${x.max_band_diff_db.toFixed(2)} dB · time offset ${x.offset_samples} samples · L/R mixing: Equalizer APO ${x.mixing.eqapo.toFixed(2)}, Diviora ${x.mixing.diviora.toFixed(2)}. Measured on the test sound only; these are effects (dB), not configuration values.</span></div>`;
+            for (const c of x.channels) {
+                h += `<h4 style="margin:16px 0 6px;">Channel ${esc(c.name)}: level Equalizer APO ${f1(c.level_eqapo_db)} dB · Diviora ${f1(c.level_diviora_db)} dB · waveform difference ${c.residual_db.toFixed(0)} dB ${c.residual_db < -40 ? '(identical)' : ''}</h4><div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:11.5px;"><tr><td style="padding:2px 6px;color:#6b6f85;">Hz</td>${c.bands.map(b => `<td style="padding:2px 5px;text-align:right;color:#6b6f85;">${b[0] < 1000 ? Math.round(b[0]) : (b[0] / 1000).toFixed(1) + 'k'}</td>`).join('')}</tr><tr><td style="padding:2px 6px;">EqAPO</td>${c.bands.map(b => `<td style="padding:2px 5px;text-align:right;">${f1(b[1])}</td>`).join('')}</tr><tr><td style="padding:2px 6px;">Diviora</td>${c.bands.map(b => { const d = Math.abs(b[1] - b[2]); return `<td style="padding:2px 5px;text-align:right;color:${d > 0.5 ? '#e91429' : d > 0.1 ? '#e0a526' : '#1db954'}">${f1(b[2])}</td>`; }).join('')}</tr></table></div>`;
+            }
+            const list = (arr) => arr.length ? `<pre style="white-space:pre-wrap;font-size:11px;background:#0f1019;padding:8px;border-radius:6px;max-height:260px;overflow:auto;">${arr.map(esc).join('\n')}</pre>` : '<div style="font-size:12px;color:#a7a7a7;">(none)</div>';
+            h += `<h4 style="margin:18px 0 6px;">Equalizer APO's own messages about errors / ignored lines (numbers hidden as #)</h4>` + list(x.notable_log);
+            h += `<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:12.5px;">Full Equalizer APO log (numbers hidden)</summary>${list(x.log)}</details>`;
+            return h;
+        }
+        document.getElementById('btnCompareKit').addEventListener('click', async () => {
+            try {
+                const dir = await invokeCmd('create_eqapo_compare_kit');
+                alert("Test files created in:\n" + dir + "\n\n1. On a PC with Equalizer APO 1.4.2, load and save the same configuration in its Configuration Editor.\n2. Double-click run_with_equalizer_apo.bat in that folder (copy the folder there and back if it is another PC).\n3. Press \"2. Compare\".\n\nNothing is sent over the internet.");
+            } catch (err) { alert("Could not create test files: " + err); }
+        });
+        document.getElementById('btnCompareRun').addEventListener('click', async () => {
+            try {
+                const x = await invokeCmd('compare_with_eqapo');
+                lastExplainHtml = compareHtml(x);
+                lastReportTitle = "Diviora compared with Equalizer APO 1.4.2";
+                document.getElementById('boxExplain').innerHTML = lastExplainHtml;
+                document.getElementById('modalExplainOverlay').style.display = 'flex';
+            } catch (err) { alert("Cannot compare yet: " + err); }
+        });
         document.getElementById('btnExplainConfig').addEventListener('click', async () => {
             try {
                 const x = await invokeCmd('explain_apo_profile');
                 lastExplainHtml = explainHtml(x);
+                lastReportTitle = "How Equalizer APO 1.4 processes this configuration";
                 document.getElementById('boxExplain').innerHTML = lastExplainHtml;
                 document.getElementById('modalExplainOverlay').style.display = 'flex';
             } catch (err) { alert("Cannot explain: " + err); }
         });
         document.getElementById('btnCloseExplain').addEventListener('click', () => { document.getElementById('modalExplainOverlay').style.display = 'none'; });
         document.getElementById('btnSaveExplain').addEventListener('click', async () => {
-            const page = `<!doctype html><html><head><meta charset="utf-8"><title>Diviora configuration explained</title></head><body style="background:#090a0f;color:#fff;font-family:Segoe UI,Arial,sans-serif;padding:24px;"><h2>How Equalizer APO 1.4 processes this configuration</h2><p style="color:#a7a7a7;font-size:13px;">Generated by Diviora. Contains no configuration values.</p>${lastExplainHtml}</body></html>`;
+            const page = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(lastReportTitle)}</title></head><body style="background:#090a0f;color:#fff;font-family:Segoe UI,Arial,sans-serif;padding:24px;"><h2>${esc(lastReportTitle)}</h2><p style="color:#a7a7a7;font-size:13px;">Generated by Diviora. Contains no configuration values.</p>${lastExplainHtml}</body></html>`;
             try { alert("Saved:\n" + await invokeCmd('save_explain_report', { html: page })); }
             catch (err) { alert("Could not save: " + err); }
         });

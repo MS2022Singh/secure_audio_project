@@ -134,3 +134,36 @@ mod tests {
         assert!((y[2400] - 1.0).abs() < 0.01, "{}", y[2400]);
     }
 }
+
+/// 32-bit float WAV from interleaved samples.
+pub fn encode_f32(sample_rate: u32, channels: u16, interleaved: &[f32]) -> Vec<u8> {
+    let data_len = (interleaved.len() * 4) as u32;
+    let mut b = Vec::with_capacity(44 + data_len as usize);
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&(36 + data_len).to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&3u16.to_le_bytes());
+    b.extend_from_slice(&channels.to_le_bytes());
+    b.extend_from_slice(&sample_rate.to_le_bytes());
+    b.extend_from_slice(&(sample_rate * channels as u32 * 4).to_le_bytes());
+    b.extend_from_slice(&(channels * 4).to_le_bytes());
+    b.extend_from_slice(&32u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&data_len.to_le_bytes());
+    for s in interleaved {
+        b.extend_from_slice(&s.to_le_bytes());
+    }
+    b
+}
+
+#[cfg(test)]
+mod encode_tests {
+    #[test]
+    fn round_trip() {
+        let x = [0.5f32, -0.25, 0.125, 1.0];
+        let (sr, ch) = super::decode(&super::encode_f32(44100, 2, &x)).unwrap();
+        assert_eq!(sr, 44100);
+        assert_eq!(ch, vec![vec![0.5, 0.125], vec![-0.25, 1.0]]);
+    }
+}

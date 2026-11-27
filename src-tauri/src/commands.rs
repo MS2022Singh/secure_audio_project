@@ -113,16 +113,7 @@ pub fn explain_apo_profile() -> Result<serde_json::Value, String> {
     let speakers = crate::playback::manager::default_output_name();
     let ctx = diviora_dsp::Context { sample_rate: 48000, channels: 2, device_name: speakers.clone(), ..Default::default() };
     let cfg = diviora_dsp::parse_with(&text, None, &ctx);
-    let mask = |s: &str| -> String {
-        let mut out = String::new();
-        let mut prev_digit = false;
-        for c in s.chars() {
-            if c.is_ascii_digit() { if !prev_digit { out.push('#'); } prev_digit = true; }
-            else if prev_digit && (c == '.' || c == ',') { /* part of the number */ }
-            else { out.push(c); prev_digit = false; }
-        }
-        out
-    };
+    let mask = mask_numbers;
     let mut lines: Vec<serde_json::Value> = cfg.trace.iter().map(|t| serde_json::json!({
         "file": if t.file == "config" { "config".to_string() } else { "include".to_string() },
         "line": t.line, "kind": t.kind, "what": t.what, "channels": t.channels,
@@ -159,6 +150,115 @@ pub fn save_explain_report(html: String) -> Result<String, String> {
     let path = desktop_file("Diviora_Configuration_Explained.html");
     fs::write(&path, html).map_err(|e| e.to_string())?;
     Ok(path.display().to_string())
+}
+
+/// Numbers in a text become "#" (so reports never contain configuration values).
+fn mask_numbers(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_digit = false;
+    for c in s.chars() {
+        if c.is_ascii_digit() { if !prev_digit { out.push('#'); } prev_digit = true; }
+        else if prev_digit && (c == '.' || c == ',') { /* part of the number */ }
+        else { out.push(c); prev_digit = false; }
+    }
+    out
+}
+
+const COMPARE_DIR: &str = "Diviora_EqualizerAPO_Compare";
+const COMPARE_RATE: u32 = 48000;
+const COMPARE_SECONDS: f64 = 6.0;
+
+/// Step 1 of "Compare with Equalizer APO 1.4.2": writes a test sound and a script into a folder
+/// on the Desktop. The script runs Equalizer APO's own Benchmark.exe on the test sound with the
+/// configuration loaded in Equalizer APO's Configuration Editor. Nothing is sent anywhere.
+#[tauri::command]
+pub fn create_eqapo_compare_kit() -> Result<String, String> {
+    require_developer()?;
+    let dir = desktop_file(COMPARE_DIR);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for old in ["eqapo_output.wav", "eqapo_trace.txt", "eqapo_log.txt"] { let _ = fs::remove_file(dir.join(old)); }
+    let input = diviora_dsp::analysis::test_noise(COMPARE_RATE, 2, COMPARE_SECONDS);
+    fs::write(dir.join("test_input.wav"), diviora_dsp::wav::encode_f32(COMPARE_RATE, 2, &input)).map_err(|e| e.to_string())?;
+    let speakers = crate::playback::manager::default_output_name().replace(['"', '%', '^', '&', '|', '<', '>'], "");
+    let bat = format!(
+"@echo off\r\n\
+rem Runs Equalizer APO 1.4.2's own Benchmark.exe on test_input.wav with the configuration\r\n\
+rem that is loaded in the Equalizer APO Configuration Editor. Nothing is sent anywhere.\r\n\
+cd /d \"%~dp0\"\r\n\
+set EQ=%ProgramFiles%\\EqualizerAPO\\Benchmark.exe\r\n\
+if not exist \"%EQ%\" (echo Equalizer APO is not installed in %ProgramFiles%\\EqualizerAPO & pause & exit /b 1)\r\n\
+del /q eqapo_output.wav eqapo_trace.txt eqapo_log.txt \"%TEMP%\\EqualizerAPO.log\" 2>nul\r\n\
+\"%EQ%\" -i test_input.wav -o eqapo_output.wav -v --nopause --devicename \"{speakers}\" > eqapo_trace.txt 2>&1\r\n\
+if exist \"%TEMP%\\EqualizerAPO.log\" copy /y \"%TEMP%\\EqualizerAPO.log\" eqapo_log.txt >nul\r\n\
+if exist eqapo_output.wav (echo Done. Go back to Diviora and press Compare.) else (echo Benchmark did not write eqapo_output.wav - see eqapo_trace.txt)\r\n\
+pause\r\n");
+    fs::write(dir.join("run_with_equalizer_apo.bat"), bat).map_err(|e| e.to_string())?;
+    fs::write(dir.join("README.txt"),
+"1. On a PC with Equalizer APO 1.4.2, open the Configuration Editor and load the same configuration\r\n   you uploaded to Diviora (Save it, so Equalizer APO's config.txt uses it).\r\n\
+2. Copy this folder to that PC (if it is another PC) and double-click run_with_equalizer_apo.bat.\r\n\
+3. Copy the folder back to this Desktop (same name) and press Compare in the Diviora developer panel.\r\n\
+Only these files are read. Nothing is uploaded.\r\n").map_err(|e| e.to_string())?;
+    Ok(dir.display().to_string())
+}
+
+/// Step 2: compares Equalizer APO's real output (eqapo_output.wav) with Diviora's output for
+/// the uploaded configuration. Returns levels and band gains in dB (effects, not configuration
+/// values) and Equalizer APO's own log with all numbers hidden.
+#[tauri::command]
+pub fn compare_with_eqapo() -> Result<serde_json::Value, String> {
+    require_developer()?;
+    let text = STAGED_PROFILE.lock().unwrap().clone().ok_or("Upload the same configuration to Diviora first.")?;
+    let dir = desktop_file(COMPARE_DIR);
+    let in_bytes = fs::read(dir.join("test_input.wav")).map_err(|_| "Press \"Create test files\" first.".to_string())?;
+    let out_bytes = fs::read(dir.join("eqapo_output.wav")).map_err(|_| format!(
+        "{} not found yet. Run run_with_equalizer_apo.bat in that folder on the PC with Equalizer APO 1.4.2.",
+        dir.join("eqapo_output.wav").display()))?;
+    let (sr, inp) = diviora_dsp::wav::decode(&in_bytes)?;
+    let (sr_o, eq) = diviora_dsp::wav::decode(&out_bytes)?;
+    if sr_o != sr { return Err(format!("Equalizer APO wrote {} Hz, expected {} Hz.", sr_o, sr)); }
+    if eq.len() < inp.len() {
+        return Err(format!("Equalizer APO's output has {} channels, the test sound {}.", eq.len(), inp.len()));
+    }
+    let ch = inp.len();
+    let frames = inp[0].len().min(eq[0].len());
+    let interleave = |v: &[Vec<f32>]| -> Vec<f32> { (0..frames).flat_map(|i| v.iter().take(ch).map(move |c| c[i])).collect() };
+    let input = interleave(&inp);
+    let eq_out = interleave(&eq);
+    let speakers = crate::playback::manager::default_output_name();
+    let ctx = diviora_dsp::Context { sample_rate: sr, channels: ch, device_name: speakers.clone(), ..Default::default() };
+    let cfg = diviora_dsp::parse_with(&text, None, &ctx);
+    let mut engine = diviora_dsp::Engine::compile(&cfg.stages_for_device(&speakers), sr, ch, 0);
+    let mut ours = input.clone();
+    engine.process_interleaved(&mut ours);
+    let c = diviora_dsp::analysis::compare(&input, &eq_out, &ours, sr, ch);
+    let names = ["L", "R", "C", "LFE", "RL", "RR", "SL", "SR"];
+    let worst_res = c.residual_db.iter().cloned().fold(f64::MIN, f64::max);
+    let verdict = if c.max_band_diff_db < 0.1 && worst_res < -40.0 { "same" }
+        else if c.max_band_diff_db < 0.5 { "close" } else { "different" };
+    let mut log = String::new();
+    for f in ["eqapo_trace.txt", "eqapo_log.txt"] {
+        if let Ok(b) = fs::read(dir.join(f)) { log.push_str(&String::from_utf8_lossy(&b)); log.push('\n'); }
+    }
+    let log_lines: Vec<String> = log.lines().map(|l| l.trim()).filter(|l| !l.is_empty())
+        .map(mask_numbers).take(600).collect();
+    let notable: Vec<&String> = log_lines.iter().filter(|l| {
+        let s = l.to_lowercase();
+        ["error", "warn", "invalid", "unknown", "ignor", "not ", "fail"].iter().any(|k| s.contains(k))
+    }).collect();
+    Ok(serde_json::json!({
+        "verdict": verdict,
+        "max_band_diff_db": c.max_band_diff_db,
+        "offset_samples": c.lag_frames,
+        "mixing": { "eqapo": c.mixing_a, "diviora": c.mixing_b },
+        "channels": (0..ch).map(|i| serde_json::json!({
+            "name": names.get(i).copied().unwrap_or("?"),
+            "level_eqapo_db": c.level_a_db[i], "level_diviora_db": c.level_b_db[i],
+            "residual_db": c.residual_db[i],
+            "bands": c.bands[i].iter().map(|(f, a, b)| serde_json::json!([f, a, b])).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "notable_log": notable,
+        "log": log_lines,
+    }))
 }
 
 /// What the developer panel should show when it opens: an uploaded (staged) configuration,
@@ -649,26 +749,6 @@ pub fn generate_invite_token(days_valid: u32) -> Result<String, String> {
     diviora_client::server::admin_create_invite(&dev.server_url, &dev.admin_token, days_valid.max(1))
 }
 
-#[tauri::command]
-pub fn sync_project_to_github(commit_msg: String) -> Result<String, String> {
-    require_developer()?;
-    let root = find_repo_root().ok_or_else(|| "Not running from a project checkout: Git sync is a developer-machine feature.".to_string())?;
-    let run = |args: &[&str]| -> Result<String, String> {
-        let o = std::process::Command::new("git").args(args).current_dir(&root).output()
-            .map_err(|e| format!("git not available: {}", e))?;
-        let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-        if o.status.success() { Ok(text) } else { Err(format!("git {} failed:\n{}", args.join(" "), text)) }
-    };
-    let msg = if commit_msg.trim().is_empty() { "Diviora update".to_string() } else { commit_msg };
-    run(&["add", "-A"])?;
-    let commit = match run(&["commit", "-m", &msg]) {
-        Ok(t) => t,
-        Err(e) if e.contains("nothing to commit") => "Nothing new to commit.".to_string(),
-        Err(e) => return Err(e),
-    };
-    let push = run(&["push", "-u", "origin", "HEAD"])?;
-    Ok(format!("{}\n{}", commit.trim(), push.trim()))
-}
 
 #[tauri::command]
 pub fn export_processed_audio_file(source_path: String, _manager: State<'_, Arc<Mutex<PlaybackManager>>>) -> Result<String, String> {
@@ -1139,15 +1219,25 @@ pub fn enforce_global_hardware_apo(manager: State<'_, Arc<Mutex<PlaybackManager>
         let mutex_lock = mgr.lock().unwrap();
         *mutex_lock.is_global_apo_locked.lock().unwrap() = true;
     }
-    // Developer machine with a licence server: publish, so every activated device updates.
-    let published = match diviora_client::state::developer_credentials() {
-        Some(dev) => match diviora_client::server::admin_publish_config(&dev.server_url, &dev.admin_token, &payload) {
-            Ok(v) => format!(" Published to all users as version {}.", v),
-            Err(e) => format!(" NOT published to users: {}", e),
-        },
-        None => String::new(),
-    };
-    Ok(format!("Master configuration encrypted and locked: {} (readable only by Windows audio and Administrators).{}", path.display(), published))
+    // Nothing is sent anywhere: locking is local only. Publishing to users is a separate,
+    // explicit action (publish_config_to_users) that needs the developer's own licence server.
+    Ok(format!("Master configuration encrypted and locked on this PC: {} (readable only by Windows audio and Administrators). Nothing was sent over the internet.", path.display()))
+}
+
+/// Explicit, separate action: send the current configuration to the developer's own licence
+/// server so activated devices receive it. Never called automatically; only available when a
+/// licence server is configured for the developer (developer.json / DIVIORA_ADMIN_TOKEN).
+#[tauri::command]
+pub fn publish_config_to_users() -> Result<String, String> {
+    require_developer()?;
+    let dev = diviora_client::state::developer_credentials()
+        .ok_or("No licence server is configured, so nothing can be (or was) published.")?;
+    let payload = compose_apo_payload();
+    if payload.trim().is_empty() {
+        return Err("Upload and enable a configuration first.".into());
+    }
+    let v = diviora_client::server::admin_publish_config(&dev.server_url, &dev.admin_token, &payload)?;
+    Ok(format!("Published to all activated devices as version {} (sent only to your licence server {}).", v, dev.server_url))
 }
 
 #[tauri::command]

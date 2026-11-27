@@ -30,6 +30,14 @@ fn agent() -> ureq::Agent {
     b.build()
 }
 
+/// Licence-server addresses must use HTTPS (plain HTTP only for this computer, for testing), so
+/// tokens and configurations are never sent readable over the network.
+fn secure(url: &str) -> Result<&str, String> {
+    let u = url.trim_end_matches('/');
+    let local = ["http://127.0.0.1", "http://localhost", "http://[::1]"].iter().any(|p| u.starts_with(p));
+    if u.starts_with("https://") || local { Ok(u) } else { Err("The licence server address must start with https://".into()) }
+}
+
 fn err(e: ureq::Error) -> String {
     match e {
         ureq::Error::Status(code, resp) => {
@@ -43,24 +51,28 @@ fn err(e: ureq::Error) -> String {
 }
 
 pub fn activate(url: &str, license_key: &str, device_id: &str) -> Result<Session, String> {
+    let url = secure(url)?;
     agent().post(&format!("{}/api/v3/activate", url))
         .send_json(serde_json::json!({ "license_key": license_key, "device_id": device_id }))
         .map_err(err)?.into_json().map_err(|e| e.to_string())
 }
 
 pub fn redeem_invite(url: &str, invite: &str, device_id: &str) -> Result<Session, String> {
+    let url = secure(url)?;
     agent().post(&format!("{}/api/v3/redeem", url))
         .send_json(serde_json::json!({ "invite_token": invite, "device_id": device_id }))
         .map_err(err)?.into_json().map_err(|e| e.to_string())
 }
 
 pub fn fetch_config(url: &str, session: &str, since: i64) -> Result<ConfigResponse, String> {
+    let url = secure(url)?;
     agent().get(&format!("{}/api/v3/config?since={}", url, since))
         .set("Authorization", &format!("Bearer {}", session))
         .call().map_err(err)?.into_json().map_err(|e| e.to_string())
 }
 
 pub fn admin_create_invite(url: &str, admin_token: &str, days: u32) -> Result<String, String> {
+    let url = secure(url)?;
     let v: serde_json::Value = agent().post(&format!("{}/api/v3/admin/invites", url))
         .set("Authorization", &format!("Bearer {}", admin_token))
         .send_json(serde_json::json!({ "days": days }))
@@ -69,6 +81,7 @@ pub fn admin_create_invite(url: &str, admin_token: &str, days: u32) -> Result<St
 }
 
 pub fn admin_publish_config(url: &str, admin_token: &str, text: &str) -> Result<i64, String> {
+    let url = secure(url)?;
     let v: serde_json::Value = agent().post(&format!("{}/api/v3/admin/config", url))
         .set("Authorization", &format!("Bearer {}", admin_token))
         .send_json(serde_json::json!({ "text": text }))
@@ -79,4 +92,15 @@ pub fn admin_publish_config(url: &str, admin_token: &str, text: &str) -> Result<
 /// Fetch a JSON document (e.g. the app's update manifest). Follows redirects.
 pub fn get_json(url: &str) -> Result<serde_json::Value, String> {
     agent().get(url).call().map_err(err)?.into_json().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_https_or_this_computer() {
+        assert!(super::secure("https://x.example").is_ok());
+        assert!(super::secure("http://127.0.0.1:8000").is_ok());
+        assert!(super::secure("http://x.example").is_err());
+        assert!(super::secure("ftp://x").is_err());
+    }
 }
