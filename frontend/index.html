@@ -1341,6 +1341,7 @@
         async function refreshConfigState() {
             let st;
             try { st = await invokeCmd('apo_config_state'); } catch (e) { return; }
+            if (!st) return;
             const sync = document.getElementById('lblApoSyncStatus');
             const script = document.getElementById('lblApoScriptStatus');
             const removeBtn = document.getElementById('btnRemoveApoFile');
