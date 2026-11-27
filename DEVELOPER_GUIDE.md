@@ -58,7 +58,7 @@ Every push builds and publishes two pre-releases on GitHub:
 | Release | Contents |
 |---|---|
 | `test-build` | The newest build. Apps update to it automatically. |
-| `previous-build` | The build before it, for rollback. Only one is kept, so older builds don't pile up. Its tag points at that version's source code. |
+| `previous-build` | The build before it, for rollback. Only one is kept, so older builds don't pile up. Its release notes link that version's source code. |
 
 **Licence → ↩ Roll back to previous version** (Windows):
 1. Installs the previous build, after checking its signature.

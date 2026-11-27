@@ -233,10 +233,13 @@ jobs:
               gh api "repos/$REPO/releases?per_page=100" -q '.[] | select(.tag_name=="previous-build") | .id' |
                 while read -r id; do gh api -X DELETE "repos/$REPO/releases/$id" || true; done
               gh api -X DELETE "repos/$REPO/git/refs/tags/previous-build" || true
-              gh release create previous-build prev/* --repo "$REPO" --prerelease --target "$OLD_SHA" \
+              # (Tagged at this commit: the build token may not tag older commits. The notes link
+              # the source of the previous version.)
+              gh release create previous-build prev/* --repo "$REPO" --prerelease --target "${{ github.sha }}" \
                 --title "Previous build $OLD_V (rollback)" \
-                --notes "The build before the current test build. Diviora's \"Roll back to previous version\" installs this one. Source code of this version: tag previous-build."
-              gh release edit previous-build --repo "$REPO" --draft=false --prerelease
+                --notes "The build before the current test build. Diviora's \"Roll back to previous version\" installs this one. Source code of this version: https://github.com/$REPO/tree/$OLD_SHA" \
+                || echo "::warning::could not keep the previous build for rollback"
+              gh release edit previous-build --repo "$REPO" --draft=false --prerelease || true
             fi
           fi
           # Remove every earlier test-build release, drafts included (a draft has no tag).
