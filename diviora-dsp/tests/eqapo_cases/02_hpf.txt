@@ -1,0 +1,1 @@
+Filter: ON HPF Fc 1000 Hz

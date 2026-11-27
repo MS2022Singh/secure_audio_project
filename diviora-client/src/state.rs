@@ -77,20 +77,46 @@ pub fn server_url(state: &ClientState) -> Option<String> {
 
 /// Developer credentials (developer machine only): %LOCALAPPDATA%\Diviora\developer.json
 /// {"server_url": "...", "admin_token": "..."}, or the DIVIORA_ADMIN_TOKEN environment variable.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeveloperCredentials {
     #[serde(default)]
     pub server_url: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub admin_token: String,
+    /// The token encrypted for this Windows user (DPAPI), base64. Written by the app.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub admin_token_protected: String,
+}
+
+fn developer_file() -> Option<PathBuf> {
+    std::env::var("LOCALAPPDATA").ok().map(|d| PathBuf::from(d).join("Diviora").join("developer.json"))
+}
+
+/// Save the licence-server address and developer token for this Windows user only.
+pub fn save_developer_credentials(server_url: &str, admin_token: &str) -> Result<(), String> {
+    let path = developer_file().ok_or("No user profile folder.")?;
+    #[cfg(windows)]
+    let prot = crate::seal::b64(&crate::apo_config::protect_secret(admin_token, false)?);
+    #[cfg(not(windows))]
+    let prot = crate::seal::b64(admin_token.as_bytes());
+    let c = DeveloperCredentials { server_url: server_url.trim().trim_end_matches('/').to_string(), admin_token: String::new(), admin_token_protected: prot };
+    if let Some(d) = path.parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; }
+    std::fs::write(&path, serde_json::to_string_pretty(&c).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
 pub fn developer_credentials() -> Option<DeveloperCredentials> {
-    let mut c = std::env::var("LOCALAPPDATA").ok()
-        .map(|d| PathBuf::from(d).join("Diviora").join("developer.json"))
+    let mut c = developer_file()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str::<DeveloperCredentials>(&s).ok())
         .unwrap_or_default();
+    if c.admin_token.is_empty() && !c.admin_token_protected.is_empty() {
+        if let Ok(b) = crate::seal::unb64(&c.admin_token_protected) {
+            #[cfg(windows)]
+            { c.admin_token = crate::apo_config::unprotect_secret(&b, false).unwrap_or_default(); }
+            #[cfg(not(windows))]
+            { c.admin_token = String::from_utf8(b).unwrap_or_default(); }
+        }
+    }
     if let Ok(t) = std::env::var("DIVIORA_ADMIN_TOKEN") { c.admin_token = t; }
     if c.server_url.is_empty() {
         c.server_url = server_url(&ClientState::load()).unwrap_or_default();

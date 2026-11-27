@@ -36,6 +36,8 @@ async fn auto_update(app: tauri::AppHandle) {
         }
     }
     match checked {
+        Ok(Some(update)) if is_held(&update.version) => set(format!(
+            "rolled back: version {} is not installed again; the next newer build will be", update.version)),
         Ok(Some(update)) => {
             set(format!("installing version {}…", update.version));
             match update.download_and_install(|_, _| {}, || {}).await {
@@ -60,6 +62,33 @@ async fn check_updates_now(app: tauri::AppHandle) -> String {
         let _ = app;
         "phone: see the update banner".to_string()
     }
+}
+
+/// Go back to the previous build (Windows). The version left is held: automatic updates skip
+/// it and resume with the next newer build.
+#[tauri::command]
+async fn rollback_to_previous(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let endpoint = update_endpoint(&app)?.replace("/test-build/", "/previous-build/");
+        let h = app.clone();
+        return tauri::async_runtime::spawn_blocking(move || windows_install_from_manifest(&h, &endpoint, true))
+            .await.map_err(|e| e.to_string())?
+            .map(|m| m.unwrap_or_default());
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("Android does not allow installing an older version over a newer one. Uninstall Diviora, then install the previous APK from the project's previous-build release.".into())
+    }
+}
+
+/// Undo a rollback hold (resume automatic updates to the latest build).
+#[tauri::command]
+fn resume_updates() -> String {
+    #[cfg(desktop)]
+    { let _ = std::fs::remove_file(hold_path()); }
+    "Automatic updates resume with the latest build.".into()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -152,11 +181,17 @@ pub fn run() {
             commands::save_explain_report,
             commands::apo_config_state,
             commands::publish_config_to_users,
+            commands::deliver_to_new_devices,
+            commands::withdraw_config_from_users,
+            commands::set_licence_server,
+            commands::publish_status,
             commands::relaunch_as_admin,
             commands::import_track_b64,
             commands::change_developer_password,
             commands::app_version_info,
-            check_updates_now
+            check_updates_now,
+            rollback_to_previous,
+            resume_updates
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -227,23 +262,59 @@ fn windows_download(url: &str, out: &std::path::Path) -> Result<(), String> {
 /// Update check + signed install without Tauri's HTTP client. Ok(None) = up to date.
 #[cfg(windows)]
 fn windows_fallback_update(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+    let endpoint = update_endpoint(app)?;
+    windows_install_from_manifest(app, &endpoint, false)
+}
+
+/// The update manifest address configured in this build.
+#[cfg(windows)]
+fn update_endpoint(app: &tauri::AppHandle) -> Result<String, String> {
+    let updater_cfg = app.config().plugins.0.get("updater").cloned().unwrap_or_default();
+    updater_cfg.get("endpoints").and_then(|e| e.get(0)).and_then(|e| e.as_str())
+        .map(|s| s.to_string()).ok_or_else(|| "no update address configured".to_string())
+}
+
+/// Rollback: version held back (not auto-installed again) after the user rolled back from it.
+#[cfg(desktop)]
+fn hold_path() -> std::path::PathBuf {
+    dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("Diviora").join("update_hold.txt")
+}
+#[cfg(desktop)]
+fn held_version() -> Option<String> {
+    std::fs::read_to_string(hold_path()).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+#[cfg(desktop)]
+fn version_parts(v: &str) -> Vec<u64> {
+    v.trim().trim_start_matches('v').split(['.', '-']).map(|p| p.parse().unwrap_or(0)).take(3).collect()
+}
+/// Is `latest` blocked by a rollback? (Only that exact version or older; a newer build is installed.)
+#[cfg(desktop)]
+fn is_held(latest: &str) -> bool {
+    held_version().map(|h| version_parts(latest) <= version_parts(&h)).unwrap_or(false)
+}
+
+/// Download a manifest, verify the installer's signature and run it.
+/// `rollback`: install the manifest's version even if it is older, and hold the current one.
+#[cfg(windows)]
+fn windows_install_from_manifest(app: &tauri::AppHandle, endpoint: &str, rollback: bool) -> Result<Option<String>, String> {
     let dir = std::env::temp_dir().join("diviora-update");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let updater_cfg = app.config().plugins.0.get("updater").cloned().unwrap_or_default();
-    let endpoint = updater_cfg.get("endpoints").and_then(|e| e.get(0)).and_then(|e| e.as_str())
-        .ok_or("no update address configured")?.to_string();
     let pubkey = updater_cfg.get("pubkey").and_then(|k| k.as_str()).unwrap_or("").to_string();
     if pubkey.is_empty() { return Err("updates are not signed in this build".into()); }
 
     let manifest_path = dir.join("latest.json");
-    windows_download(&endpoint, &manifest_path)?;
+    windows_download(endpoint, &manifest_path)?;
     let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest_path).map_err(|e| e.to_string())?)
         .map_err(|e| format!("bad update manifest: {}", e))?;
     let latest = manifest.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0").trim_start_matches('v').to_string();
-    let parse = |v: &str| -> Vec<u64> { v.split(['.', '-']).map(|p| p.parse().unwrap_or(0)).take(3).collect() };
     let current = app.package_info().version.to_string();
-    if parse(&latest) <= parse(&current) {
+    if rollback {
+        if version_parts(&latest) >= version_parts(&current) {
+            return Err(format!("no older version to go back to (the previous build is {}, this is {})", latest, current));
+        }
+    } else if version_parts(&latest) <= version_parts(&current) || is_held(&latest) {
         return Ok(None);
     }
     let plat = manifest.pointer("/platforms/windows-x86_64").ok_or("no Windows update in the manifest")?;
@@ -270,6 +341,10 @@ fn windows_fallback_update(app: &tauri::AppHandle) -> Result<Option<String>, Str
         .spawn()
         .map_err(|e| format!("could not start the installer: {}", e))?;
     // Give the installer a moment to start, then leave so it can replace the app.
+    if rollback {
+        if let Some(d) = hold_path().parent() { let _ = std::fs::create_dir_all(d); }
+        std::fs::write(hold_path(), &current).map_err(|e| e.to_string())?;
+    }
     std::thread::sleep(std::time::Duration::from_secs(2));
     app.exit(0);
     Ok(Some(format!("installing version {}…", latest)))

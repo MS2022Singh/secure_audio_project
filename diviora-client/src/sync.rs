@@ -26,7 +26,7 @@ pub fn sync_once() -> Result<SyncOutcome, String> {
     ensure_session(&mut st, &url)?;
     let cfg = server::fetch_config(&url, &st.session, st.config_version)?;
     let outcome = if cfg.changed {
-        apo_config::write_locked_config(&cfg.text)?;
+        apo_config::write_locked_config(&cfg.open()?)?;
         st.config_version = cfg.version;
         SyncOutcome::Applied(cfg.version)
     } else {
@@ -58,5 +58,5 @@ pub fn fetch_latest_config() -> Result<Option<(i64, String)>, String> {
     ensure_session(&mut st, &url)?;
     let cfg = server::fetch_config(&url, &st.session, 0)?;
     st.save()?;
-    Ok(if cfg.version > 0 { Some((cfg.version, cfg.text)) } else { None })
+    Ok(if cfg.changed { Some((cfg.version, cfg.open()?)) } else { None })
 }

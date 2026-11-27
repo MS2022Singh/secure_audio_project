@@ -1,0 +1,4 @@
+Copy: CX=0.5*L+0.5*R
+Channel: CX
+Filter: ON LP Fc 500 Hz
+Copy: L=0.5*L+0.5*CX R=0.5*R+0.5*CX

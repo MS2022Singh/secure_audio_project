@@ -111,6 +111,17 @@ pub fn read_status() -> Option<serde_json::Value> {
     serde_json::from_str(&s).ok()
 }
 
+/// Small secrets at rest on Windows: DPAPI, machine scope (device key, readable by the app and
+/// the sync service on this PC only) or user scope (developer's publishing keys).
+#[cfg(windows)]
+pub fn protect_secret(text: &str, machine: bool) -> Result<Vec<u8>, String> {
+    if machine { imp::protect_machine_str(text) } else { imp::protect_user_str(text) }
+}
+#[cfg(windows)]
+pub fn unprotect_secret(blob: &[u8], machine: bool) -> Result<String, String> {
+    if machine { imp::unprotect_machine_str(blob) } else { imp::unprotect_user(blob) }
+}
+
 #[cfg(windows)]
 mod imp {
     use super::*;
@@ -178,6 +189,24 @@ mod imp {
             let blob = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
             LocalFree(out.pbData as *mut c_void as _);
             Ok(blob)
+        }
+    }
+
+    pub fn protect_machine_str(text: &str) -> Result<Vec<u8>, String> { protect(text) }
+    pub fn protect_user_str(text: &str) -> Result<Vec<u8>, String> { protect_user(text) }
+    pub fn unprotect_machine_str(blob: &[u8]) -> Result<String, String> {
+        let input = CRYPT_INTEGER_BLOB { cbData: blob.len() as u32, pbData: blob.as_ptr() as *mut u8 };
+        let entropy = CRYPT_INTEGER_BLOB { cbData: ENTROPY.len() as u32, pbData: ENTROPY.as_ptr() as *mut u8 };
+        let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        // SAFETY: input/entropy point to live buffers; out is freed with LocalFree.
+        unsafe {
+            if CryptUnprotectData(&input, std::ptr::null_mut(), &entropy, std::ptr::null(), std::ptr::null(),
+                                  CRYPTPROTECT_UI_FORBIDDEN, &mut out) == 0 {
+                return Err(format!("could not unlock the device key ({})", std::io::Error::last_os_error()));
+            }
+            let bytes = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
+            LocalFree(out.pbData as *mut c_void as _);
+            String::from_utf8(bytes).map_err(|e| e.to_string())
         }
     }
 

@@ -1231,13 +1231,58 @@ pub fn enforce_global_hardware_apo(manager: State<'_, Arc<Mutex<PlaybackManager>
 pub fn publish_config_to_users() -> Result<String, String> {
     require_developer()?;
     let dev = diviora_client::state::developer_credentials()
-        .ok_or("No licence server is configured, so nothing can be (or was) published.")?;
+        .ok_or("Set your licence server address and developer token first.")?;
     let payload = compose_apo_payload();
     if payload.trim().is_empty() {
         return Err("Upload and enable a configuration first.".into());
     }
-    let v = diviora_client::server::admin_publish_config(&dev.server_url, &dev.admin_token, &payload)?;
-    Ok(format!("Published to all activated devices as version {} (sent only to your licence server {}).", v, dev.server_url))
+    let (v, n, old) = diviora_client::server::admin_publish_config(&dev.server_url, &dev.admin_token, &payload)?;
+    let mut msg = format!("Published as version {}, encrypted separately for {} activated device(s). Your licence server only stores the encrypted form and cannot read it.", v, n);
+    if old > 0 { msg += &format!(" {} device(s) still run an older Diviora: they receive it after their automatic update.", old); }
+    msg += " Devices activated later are added automatically whenever this developer panel is open.";
+    Ok(msg)
+}
+
+/// Developer panel open: give devices activated since the last publish access to it.
+#[tauri::command]
+pub fn deliver_to_new_devices() -> Result<usize, String> {
+    require_developer()?;
+    let Some(dev) = diviora_client::state::developer_credentials() else { return Ok(0) };
+    diviora_client::server::admin_deliver_to_new_devices(&dev.server_url, &dev.admin_token)
+}
+
+#[tauri::command]
+pub fn withdraw_config_from_users() -> Result<String, String> {
+    require_developer()?;
+    let dev = diviora_client::state::developer_credentials().ok_or("No licence server is set.")?;
+    diviora_client::server::admin_withdraw_config(&dev.server_url, &dev.admin_token)?;
+    Ok("Withdrawn: the licence server no longer delivers a configuration to users. Devices that already have it keep it until you publish a new one.".into())
+}
+
+#[tauri::command]
+pub fn set_licence_server(server_url: String, admin_token: String) -> Result<String, String> {
+    require_developer()?;
+    let u = server_url.trim();
+    if !u.starts_with("https://") && !u.starts_with("http://127.0.0.1") && !u.starts_with("http://localhost") {
+        return Err("The address must start with https://".into());
+    }
+    if admin_token.trim().len() < 24 { return Err("The developer token is at least 24 characters.".into()); }
+    diviora_client::state::save_developer_credentials(u, admin_token.trim())?;
+    Ok("Saved for this Windows user (token encrypted).".into())
+}
+
+#[tauri::command]
+pub fn publish_status() -> Result<serde_json::Value, String> {
+    require_developer()?;
+    let Some(dev) = diviora_client::state::developer_credentials() else {
+        return Ok(serde_json::json!({ "configured": false }));
+    };
+    let d = diviora_client::server::admin_devices(&dev.server_url, &dev.admin_token)?;
+    Ok(serde_json::json!({
+        "configured": true, "server": dev.server_url, "latest_version": d.latest_version,
+        "devices": d.devices.len(),
+        "with_access": d.devices.iter().filter(|x| x.has_key != 0).count(),
+    }))
 }
 
 #[tauri::command]

@@ -1,0 +1,1 @@
+Filter: ON LPF Fc 1000 Hz

@@ -158,6 +158,7 @@
                     <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap;">
                         <button id="btnConsumerResetPassword" class="btn-dark">Reset Client Token</button>
                         <button id="btnCheckUpdates" class="btn-dark">Check for updates</button>
+                        <button id="btnRollback" class="btn-dark">↩ Roll back to previous version</button>
                     </div>
                 </details>
             </div>
@@ -392,6 +393,19 @@
                         <button class="btn-dark" id="btnSaveWmTime">Lock Watermark Settings</button>
                         <button class="btn-outline-green" id="btnDownloadWmReport">📊 Export Watermark Audit Report (.txt)</button>
                     </div>
+                </div>
+
+                <div class="card">
+                    <h3 style="margin: 0 0 8px 0;">📡 Publish to Users (end-to-end encrypted)</h3>
+                    <p style="font-size: 12.5px; color: var(--text-muted); margin: 0 0 12px 0; line-height: 1.5;">Sends the current configuration only to your own licence server, encrypted separately for each activated device (one licence = one device). The server stores only the encrypted form and cannot read it; a device can only open the copy made for it. Nothing is sent until you press Publish.</p>
+                    <input type="text" id="txtPubServer" placeholder="Licence server address (https://…)" style="margin-bottom: 10px;" />
+                    <input type="password" id="txtPubToken" placeholder="Developer token (from your server's DIVIORA_ADMIN_TOKEN)" style="margin-bottom: 10px;" />
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                        <button class="btn-dark" id="btnPubSave">Save server</button>
+                        <button class="btn-green" id="btnPublishUsers">📤 Publish current configuration</button>
+                        <button class="btn-outline-green" id="btnWithdrawUsers">Withdraw from users</button>
+                    </div>
+                    <div id="lblPublishStatus" style="font-size: 12.5px; color: var(--text-muted); margin-top: 10px;">Licence server: not checked yet.</div>
                 </div>
 
                 <div class="card">
@@ -755,6 +769,7 @@
                     refreshElevationHint();
                     updateDynamicEstimatedProperties();
                     refreshConfigState();
+                    refreshPublishStatus(true);
                     refreshLicenceState('developer');
                 } else {
                     document.getElementById('lblMasterAuthError').innerText = "Invalid Access Token";
@@ -1111,6 +1126,11 @@
             btn.disabled = false; btn.innerText = "Check for updates";
             refreshVersionInfo();
         });
+        document.getElementById('btnRollback').addEventListener('click', async () => {
+            if (!confirm("Go back to the previous version of Diviora?\n\nThe version you leave is not installed again automatically; the next newer build is.")) return;
+            try { alert("Rollback: " + await invokeCmd('rollback_to_previous')); }
+            catch (err) { alert("Rollback not possible: " + err); }
+        });
 
 
         // APO Profile Sync & State Toggle
@@ -1149,6 +1169,36 @@
             } catch (err) {
                 alert("Lock Config failed: " + err + (String(err).toLowerCase().includes('access') ? "\n\nRun Diviora as Administrator (right-click → Run as administrator) to lock a configuration." : ""));
             }
+        });
+
+        // Publish to users (end-to-end encrypted, per device)
+        async function refreshPublishStatus(deliver) {
+            const lbl = document.getElementById('lblPublishStatus');
+            try {
+                if (deliver) { const n = await invokeCmd('deliver_to_new_devices'); if (n > 0) lbl.dataset.added = n; }
+                const st = await invokeCmd('publish_status');
+                if (!st || !st.configured) { lbl.textContent = "Licence server: not set. Nothing is published."; return; }
+                lbl.textContent = `Licence server ${st.server}: ${st.devices} activated device(s); ` +
+                    (st.latest_version ? `version ${st.latest_version} published, ${st.with_access} device(s) can open it.` : 'nothing published.') +
+                    (lbl.dataset.added ? ` (${lbl.dataset.added} newly activated device(s) were just given access.)` : '');
+            } catch (e) { lbl.textContent = "Licence server: " + e; }
+        }
+        document.getElementById('btnPubSave').addEventListener('click', async () => {
+            try {
+                alert(await invokeCmd('set_licence_server', { serverUrl: document.getElementById('txtPubServer').value, adminToken: document.getElementById('txtPubToken').value }));
+                document.getElementById('txtPubToken').value = '';
+                refreshPublishStatus(false);
+            } catch (e) { alert("Not saved: " + e); }
+        });
+        document.getElementById('btnPublishUsers').addEventListener('click', async () => {
+            if (!confirm("Publish the current configuration to all activated devices (encrypted for each device)?")) return;
+            try { alert(await invokeCmd('publish_config_to_users')); refreshPublishStatus(false); }
+            catch (e) { alert("Not published: " + e); }
+        });
+        document.getElementById('btnWithdrawUsers').addEventListener('click', async () => {
+            if (!confirm("Stop delivering the configuration to users?")) return;
+            try { alert(await invokeCmd('withdraw_config_from_users')); refreshPublishStatus(false); }
+            catch (e) { alert("Not withdrawn: " + e); }
         });
 
         // Free Access Token Generator

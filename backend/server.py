@@ -5,7 +5,11 @@
 * Invite tokens (issued by the developer) create a time-limited licence on redemption.
 * The developer publishes the master configuration (Equalizer APO text + watermark
   lines); activated clients poll for new versions and apply them automatically.
-* Configurations are stored encrypted (AES-256-GCM) and only served to valid sessions.
+* Configurations are end-to-end encrypted by the developer app: the server receives the
+  configuration sealed with a random content key, plus that key wrapped separately for each
+  activated device's public key (sent at activation). The server cannot read configurations,
+  and each device can only open what was wrapped for it. Stored blobs are additionally
+  encrypted at rest (AES-256-GCM) and only served to valid sessions.
 
 Environment (all required in production, see backend/README.md):
   DIVIORA_ADMIN_TOKEN   developer API token (long random string)
@@ -90,8 +94,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 nonce       BLOB NOT NULL,
                 ciphertext  BLOB NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS config_keys (
+                version     INTEGER NOT NULL,
+                license_key TEXT NOT NULL,
+                wrapped     TEXT NOT NULL,
+                PRIMARY KEY (version, license_key)
+            );
             """
         )
+        cols = [r["name"] for r in c.execute("PRAGMA table_info(licenses)")]
+        if "device_pubkey" not in cols:
+            c.execute("ALTER TABLE licenses ADD COLUMN device_pubkey TEXT")
 
     # ------------------------------------------------------------------ helpers
     def new_key(prefix: str) -> str:
@@ -144,10 +157,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     class Activate(BaseModel):
         license_key: str = Field(min_length=4, max_length=64)
         device_id: str = Field(min_length=8, max_length=128)
+        device_pubkey: Optional[str] = Field(default=None, max_length=64)
 
     class Redeem(BaseModel):
         invite_token: str = Field(min_length=4, max_length=64)
         device_id: str = Field(min_length=8, max_length=128)
+        device_pubkey: Optional[str] = Field(default=None, max_length=64)
 
     class NewLicense(BaseModel):
         days: int = Field(ge=1, le=36500)
@@ -157,7 +172,21 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         days: int = Field(ge=1, le=3650)
 
     class NewConfig(BaseModel):
-        text: str = Field(max_length=4 * 1024 * 1024)
+        sealed: str = Field(min_length=40, max_length=8 * 1024 * 1024)  # base64, end-to-end encrypted
+        keys: dict[str, str] = {}  # licence key -> content key wrapped for that device (base64)
+
+    class MoreKeys(BaseModel):
+        keys: dict[str, str]
+
+    def valid_pubkey(k: Optional[str]) -> Optional[str]:
+        if not k:
+            return None
+        try:
+            if len(base64.b64decode(k, validate=True)) == 32:
+                return k
+        except Exception:
+            pass
+        raise HTTPException(400, "Bad device key.")
 
     # ------------------------------------------------------------------ client API
     @app.get("/")
@@ -179,7 +208,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 raise HTTPException(403, "This licence is already bound to another device (one ID = one device).")
             if not row["device_id"]:
                 c.execute("UPDATE licenses SET device_id=? WHERE license_key=?", (p.device_id, key))
-                row = c.execute("SELECT * FROM licenses WHERE license_key=?", (key,)).fetchone()
+            pk = valid_pubkey(p.device_pubkey)
+            if pk and pk != row["device_pubkey"]:
+                # New device key: keys wrapped for the old one are useless now.
+                c.execute("UPDATE licenses SET device_pubkey=? WHERE license_key=?", (pk, key))
+                c.execute("DELETE FROM config_keys WHERE license_key=?", (key,))
+            row = c.execute("SELECT * FROM licenses WHERE license_key=?", (key,)).fetchone()
         return session_response(row)
 
     @app.post("/api/v3/redeem")
@@ -193,29 +227,37 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 raise HTTPException(403, "This invite token has already been used.")
             key = new_key("DVL")
             now = int(time.time())
-            c.execute("INSERT INTO licenses VALUES (?,?,?,?,0,?)",
-                      (key, p.device_id, now, now + inv["days"] * 86400, f"invite {token}"))
+            c.execute("INSERT INTO licenses (license_key, device_id, created_at, expires_at, revoked, note, device_pubkey) VALUES (?,?,?,?,0,?,?)",
+                      (key, p.device_id, now, now + inv["days"] * 86400, f"invite {token}", valid_pubkey(p.device_pubkey)))
             c.execute("UPDATE invites SET redeemed_by=? WHERE token=?", (key, token))
             row = c.execute("SELECT * FROM licenses WHERE license_key=?", (key,)).fetchone()
         return session_response(row)
 
     @app.get("/api/v3/config")
     def get_config(since: int = 0, who=Depends(require_session)):
+        license_key, _device = who
         with db() as c:
             row = c.execute("SELECT * FROM configs ORDER BY version DESC LIMIT 1").fetchone()
-        if not row:
-            return {"version": 0, "changed": False}
-        if row["version"] <= since:
-            return {"version": row["version"], "changed": False}
-        text = AESGCM(s.config_key).decrypt(row["nonce"], row["ciphertext"], str(row["version"]).encode()).decode()
-        return {"version": row["version"], "changed": True, "sha256": row["sha256"], "text": text}
+            if not row:
+                return {"version": 0, "changed": False}
+            if row["version"] <= since:
+                return {"version": row["version"], "changed": False}
+            k = c.execute("SELECT wrapped FROM config_keys WHERE version=? AND license_key=?",
+                          (row["version"], license_key)).fetchone()
+        if not k:
+            # Published before this device was activated: waits until the developer app
+            # wraps the key for it.
+            return {"version": row["version"], "changed": False, "pending": True}
+        sealed = AESGCM(s.config_key).decrypt(row["nonce"], row["ciphertext"], str(row["version"]).encode()).decode()
+        return {"version": row["version"], "changed": True, "sha256": row["sha256"], "sealed": sealed, "wrapped_key": k["wrapped"]}
 
     # ------------------------------------------------------------------ developer API
     @app.post("/api/v3/admin/licenses", dependencies=[Depends(require_admin)])
     def create_license(p: NewLicense):
         key, now = new_key("DVL"), int(time.time())
         with db() as c:
-            c.execute("INSERT INTO licenses VALUES (?,?,?,?,0,?)", (key, None, now, now + p.days * 86400, p.note))
+            c.execute("INSERT INTO licenses (license_key, device_id, created_at, expires_at, revoked, note) VALUES (?,?,?,?,0,?)",
+                      (key, None, now, now + p.days * 86400, p.note))
         return {"license_key": key, "expires_at": now + p.days * 86400}
 
     @app.get("/api/v3/admin/licenses", dependencies=[Depends(require_admin)])
@@ -233,8 +275,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.post("/api/v3/admin/licenses/{key}/reset-device", dependencies=[Depends(require_admin)])
     def reset_device(key: str):
         with db() as c:
-            if c.execute("UPDATE licenses SET device_id=NULL WHERE license_key=?", (key,)).rowcount == 0:
+            if c.execute("UPDATE licenses SET device_id=NULL, device_pubkey=NULL WHERE license_key=?", (key,)).rowcount == 0:
                 raise HTTPException(404, "No such licence.")
+            c.execute("DELETE FROM config_keys WHERE license_key=?", (key,))
         return {"reset": key}
 
     @app.post("/api/v3/admin/invites", dependencies=[Depends(require_admin)])
@@ -246,15 +289,59 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.post("/api/v3/admin/config", dependencies=[Depends(require_admin)])
     def publish_config(p: NewConfig):
-        digest = hashlib.sha256(p.text.encode()).hexdigest()
+        try:
+            base64.b64decode(p.sealed, validate=True)
+        except Exception:
+            raise HTTPException(400, "Configurations must be sent encrypted.")
+        digest = hashlib.sha256(p.sealed.encode()).hexdigest()
         with db() as c:
             cur = c.execute("INSERT INTO configs (created_at, sha256, nonce, ciphertext) VALUES (?,?,?,?)",
                             (int(time.time()), digest, b"", b""))
             version = cur.lastrowid
             nonce = os.urandom(12)
-            ct = AESGCM(s.config_key).encrypt(nonce, p.text.encode(), str(version).encode())
+            ct = AESGCM(s.config_key).encrypt(nonce, p.sealed.encode(), str(version).encode())
             c.execute("UPDATE configs SET nonce=?, ciphertext=? WHERE version=?", (nonce, ct, version))
-        return {"version": version, "sha256": digest}
+            n = store_keys(c, version, p.keys)
+            c.execute("DELETE FROM config_keys WHERE version<?", (version,))
+            c.execute("DELETE FROM configs WHERE version<?", (version,))
+        return {"version": version, "sha256": digest, "devices": n}
+
+    def store_keys(c, version: int, keys: dict) -> int:
+        n = 0
+        for lk, wrapped in keys.items():
+            if len(wrapped) > 200:
+                raise HTTPException(400, "Bad wrapped key.")
+            if c.execute("SELECT 1 FROM licenses WHERE license_key=?", (lk,)).fetchone():
+                c.execute("INSERT OR REPLACE INTO config_keys VALUES (?,?,?)", (version, lk, wrapped))
+                n += 1
+        return n
+
+    @app.post("/api/v3/admin/config/{version}/keys", dependencies=[Depends(require_admin)])
+    def add_keys(version: int, p: MoreKeys):
+        with db() as c:
+            if not c.execute("SELECT 1 FROM configs WHERE version=?", (version,)).fetchone():
+                raise HTTPException(404, "No such configuration version.")
+            return {"version": version, "devices": store_keys(c, version, p.keys)}
+
+    @app.delete("/api/v3/admin/config", dependencies=[Depends(require_admin)])
+    def withdraw_config():
+        """Stop distributing: devices keep nothing new; the next publish starts again."""
+        with db() as c:
+            c.execute("DELETE FROM config_keys")
+            c.execute("DELETE FROM configs")
+        return {"withdrawn": True}
+
+    @app.get("/api/v3/admin/devices", dependencies=[Depends(require_admin)])
+    def devices():
+        """Activated devices with their public keys, and whether they can open the latest version."""
+        now = int(time.time())
+        with db() as c:
+            latest = c.execute("SELECT MAX(version) AS v FROM configs").fetchone()["v"] or 0
+            rows = c.execute(
+                "SELECT l.license_key, l.device_pubkey, (k.wrapped IS NOT NULL) AS has_key FROM licenses l "
+                "LEFT JOIN config_keys k ON k.license_key=l.license_key AND k.version=? "
+                "WHERE l.device_id IS NOT NULL AND l.revoked=0 AND l.expires_at>?", (latest, now)).fetchall()
+        return {"latest_version": latest, "devices": [dict(r) for r in rows]}
 
     return app
 

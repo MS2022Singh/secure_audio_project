@@ -223,6 +223,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
+          # Rollback: keep the build being replaced as "previous-build" (only one, no clutter).
+          NEW_V="0.3.${{ github.run_number }}"
+          if gh release download test-build --repo "$REPO" -D prev 2>/dev/null && [ -f prev/latest.json ]; then
+            OLD_V=$(python3 -c 'import json;print(json.load(open("prev/latest.json"))["version"])')
+            OLD_SHA=$(gh release view test-build --repo "$REPO" --json targetCommitish -q .targetCommitish)
+            if [ "$OLD_V" != "$NEW_V" ]; then
+              sed -i 's#/releases/download/test-build/#/releases/download/previous-build/#g' prev/latest.json
+              gh api "repos/$REPO/releases?per_page=100" -q '.[] | select(.tag_name=="previous-build") | .id' |
+                while read -r id; do gh api -X DELETE "repos/$REPO/releases/$id" || true; done
+              gh api -X DELETE "repos/$REPO/git/refs/tags/previous-build" || true
+              gh release create previous-build prev/* --repo "$REPO" --prerelease --target "$OLD_SHA" \
+                --title "Previous build $OLD_V (rollback)" \
+                --notes "The build before the current test build. Diviora's \"Roll back to previous version\" installs this one. Source code of this version: tag previous-build."
+              gh release edit previous-build --repo "$REPO" --draft=false --prerelease
+            fi
+          fi
           # Remove every earlier test-build release, drafts included (a draft has no tag).
           gh api "repos/$REPO/releases?per_page=100" -q '.[] | select(.tag_name=="test-build") | .id' |
             while read -r id; do gh api -X DELETE "repos/$REPO/releases/$id" || true; done
