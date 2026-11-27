@@ -321,6 +321,7 @@
                         <button class="btn-outline-green" id="btnExportPs1Script">🛠️ Install / Repair System-Wide APO</button>
                         <button class="btn-outline-green" id="btnRestartAudio">🔄 Restart Windows Audio</button>
                         <button class="btn-outline-green" id="btnVerifySystemAudio">🔍 Verify System Audio (config + watermark)</button>
+                        <button class="btn-outline-green" id="btnExplainConfig">🧭 Explain Configuration (no values)</button>
                     </div>
                 </div>
 
@@ -453,6 +454,18 @@
     </div>
 
     <!-- PASSWORD RESET MODAL -->
+    <div class="modal-overlay" id="modalExplainOverlay">
+        <div class="modal-card" style="width: min(1100px, calc(100vw - 32px)); max-height: 88vh; overflow-y: auto; box-sizing: border-box;">
+            <div style="display:flex; align-items:center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px;">
+                <h3 style="margin:0; flex:1;">🧭 How Equalizer APO 1.4 processes this configuration</h3>
+                <button class="btn-dark" id="btnSaveExplain">Save report (HTML)</button>
+                <button class="btn-dark" id="btnCloseExplain">Close</button>
+            </div>
+            <p style="font-size: 12px; color: var(--text-muted); margin: 0 0 12px 0;">Same rules as Equalizer APO's own source code. Only command types and channel names are shown: no frequencies, gains, Q, factors or delays.</p>
+            <div id="boxExplain"></div>
+        </div>
+    </div>
+
     <div class="modal-overlay" id="modalResetOverlay">
         <div class="modal-card">
             <h3 style="margin: 0 0 12px 0;">🔐 Password Reset Gateway</h3>
@@ -747,6 +760,7 @@
                     document.getElementById('lblMasterAuthError').innerText = "";
                     refreshElevationHint();
                     updateDynamicEstimatedProperties();
+                    refreshConfigState();
                     refreshLicenceState('developer');
                 } else {
                     document.getElementById('lblMasterAuthError').innerText = "Invalid Access Token";
@@ -1040,7 +1054,8 @@
             return t.split('\n').map(line => {
                 // "• config:12: <line> — <reason>": keep the location, mask values in the line.
                 const m = line.match(/^(•\s*[^:]*:\d+:\s*)(.*?)(\s—\s.*)?$/);
-                const mask = (x) => x.replace(/"[^"]*"/g, '"…"').replace(/[-+]?\d+([.,]\d+)?(e[-+]?\d+)?/gi, '#');
+                const mask = (x) => x.replace(/Equalizer APO 1\.4\.2/g, 'EQAPO_VER').replace(/"[^"]*"/g, '"…"')
+                    .replace(/[-+]?\d+([.,]\d+)?(e[-+]?\d+)?/gi, '#').replace(/EQAPO_VER/g, 'Equalizer APO 1.4.2');
                 if (!m) return mask(line);
                 return m[1] + mask(m[2]) + (m[3] ? mask(m[3]) : '');
             }).join('\n');
@@ -1269,6 +1284,86 @@
             document.getElementById('lblApoScriptStatus').style.color = "var(--text-muted)";
             document.getElementById('btnRemoveApoFile').style.display = "none";
         });
+
+        // ---- Explain configuration: flowchart + channel routing + line list (no values) ----
+        const esc = (t) => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        function explainHtml(x) {
+            const dev = x.channels.slice(0, x.device_channels);
+            const virt = x.channels.slice(x.device_channels);
+            const chip = (n) => `<span style="display:inline-block;padding:1px 7px;margin:1px 2px;border-radius:9px;font-size:11px;font-family:monospace;${virt.includes(n) ? 'background:#2b1d3f;color:#d6b8ff;border:1px dashed #9a6bd6' : 'background:#123322;color:#9ff0c0;border:1px solid #2f7a52'}">${esc(n)}</span>`;
+            const color = { applied: '#1db954', control: '#b871f3', ignored: '#e91429', partly: '#e0a526' };
+            const label = { applied: 'APPLIED', control: 'CONTROL', ignored: 'IGNORED', partly: 'PARTLY' };
+            let h = `<div style="font-size:13px;margin-bottom:12px;">For <b>${esc(x.speakers)}</b>: ${x.applied} processing step(s); ${x.ignored} line(s) produce nothing in Equalizer APO; ${x.partly} line(s) partly applied. Device channels: ${dev.map(chip).join('')}${virt.length ? ` &nbsp;Virtual channels created by Copy: ${virt.map(chip).join('')}` : ''}</div>`;
+            // Flowchart
+            h += `<h4 style="margin:14px 0 8px;">Signal flow (top to bottom)</h4><div style="display:flex;flex-direction:column;align-items:stretch;gap:0;">`;
+            const box = (border, inner, dashed) => `<div style="border:2px ${dashed ? 'dashed' : 'solid'} ${border};border-radius:8px;padding:8px 12px;background:#0f1019;font-size:12.5px;">${inner}</div>`;
+            const arrow = `<div style="text-align:center;color:#6b6f85;line-height:14px;font-size:14px;">▼</div>`;
+            h += box('#4a90e2', `<b>Input from Windows audio</b> &nbsp;${dev.map(chip).join('')}`);
+            for (const l of x.lines) {
+                let inner = `<span style="font-size:10.5px;font-weight:800;color:${color[l.kind]};letter-spacing:.5px;">${label[l.kind]}</span> <span style="color:#6b6f85;font-size:11px;">${esc(l.file)} line ${l.line}${l.device_block ? ' · device block' : ''}</span><br>${esc(l.what)}`;
+                if (l.routes && l.routes.length) inner += '<br>' + l.routes.map(r => `${chip(r.target)} ← ${r.sources.length ? r.sources.map(chip).join(' + ') : '<i style="color:#888">silence</i>'}`).join('&nbsp;&nbsp; ');
+                else if (l.channels && l.channels.length) inner += '<br>on ' + l.channels.map(chip).join('');
+                if (l.creates && l.creates.length) inner += `<br><span style="color:#d6b8ff;font-size:11.5px;">creates virtual channel(s): ${l.creates.map(chip).join('')}</span>`;
+                h += arrow + box(color[l.kind], inner, l.kind === 'ignored');
+            }
+            h += arrow + box('#4a90e2', `<b>Output to the speakers</b> &nbsp;${dev.map(chip).join('')} <span style="color:#6b6f85;font-size:11px;">(virtual channels are never sent to the speakers)</span>`);
+            h += `</div>`;
+            // Routing table
+            const steps = x.lines.filter(l => l.kind === 'applied' || l.kind === 'partly');
+            h += `<h4 style="margin:18px 0 8px;">Channel routing (which step acts on which channel)</h4><div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:11.5px;min-width:100%;"><tr><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #333;">Line / step</th>${x.channels.map(c => `<th style="padding:4px 6px;border-bottom:1px solid #333;">${chip(c)}</th>`).join('')}</tr>`;
+            for (const l of steps) {
+                const targets = new Map((l.routes || []).map(r => [r.target, r.sources]));
+                h += `<tr><td style="padding:4px 8px;border-bottom:1px solid #222;white-space:nowrap;">${l.line}: ${esc(l.what.split(' (')[0].split(',')[0])}</td>` + x.channels.map(c => {
+                    if (targets.has(c)) return `<td style="text-align:center;border-bottom:1px solid #222;color:#d6b8ff;">← ${esc(targets.get(c).join('+') || '0')}</td>`;
+                    return `<td style="text-align:center;border-bottom:1px solid #222;color:#1db954;">${(l.channels || []).includes(c) ? '●' : ''}</td>`;
+                }).join('') + `</tr>`;
+            }
+            h += `</table></div>`;
+            return h;
+        }
+        let lastExplainHtml = "";
+        document.getElementById('btnExplainConfig').addEventListener('click', async () => {
+            try {
+                const x = await invokeCmd('explain_apo_profile');
+                lastExplainHtml = explainHtml(x);
+                document.getElementById('boxExplain').innerHTML = lastExplainHtml;
+                document.getElementById('modalExplainOverlay').style.display = 'flex';
+            } catch (err) { alert("Cannot explain: " + err); }
+        });
+        document.getElementById('btnCloseExplain').addEventListener('click', () => { document.getElementById('modalExplainOverlay').style.display = 'none'; });
+        document.getElementById('btnSaveExplain').addEventListener('click', async () => {
+            const page = `<!doctype html><html><head><meta charset="utf-8"><title>Diviora configuration explained</title></head><body style="background:#090a0f;color:#fff;font-family:Segoe UI,Arial,sans-serif;padding:24px;"><h2>How Equalizer APO 1.4 processes this configuration</h2><p style="color:#a7a7a7;font-size:13px;">Generated by Diviora. Contains no configuration values.</p>${lastExplainHtml}</body></html>`;
+            try { alert("Saved:\n" + await invokeCmd('save_explain_report', { html: page })); }
+            catch (err) { alert("Could not save: " + err); }
+        });
+
+        // Panel state when it opens: what is uploaded here, and what is locked in Windows audio.
+        async function refreshConfigState() {
+            let st;
+            try { st = await invokeCmd('apo_config_state'); } catch (e) { return; }
+            const sync = document.getElementById('lblApoSyncStatus');
+            const script = document.getElementById('lblApoScriptStatus');
+            const removeBtn = document.getElementById('btnRemoveApoFile');
+            if (!st.staged) {
+                activeApoProfilePayload = "";
+                document.getElementById('toggleApoEnableConfig').checked = false;
+                document.getElementById('lblApoToggleStatus').innerText = "DISABLED";
+                document.getElementById('lblApoToggleStatus').style.color = "var(--error-red)";
+                if (st.locked_file) {
+                    sync.innerText = "● A configuration from an earlier session is still locked in Windows audio (not loaded in this window).";
+                    sync.style.color = "var(--purple-text)";
+                    script.innerText = "● Upload it again to change it, or press Remove Config File to delete it.";
+                    removeBtn.style.display = "inline-block";
+                } else {
+                    sync.innerText = "● No configuration uploaded; Windows audio plays unprocessed sound.";
+                    sync.style.color = "var(--text-muted)";
+                    script.innerText = "● Upload a configuration file, then press Lock Config.";
+                    removeBtn.style.display = "none";
+                }
+            } else {
+                removeBtn.style.display = "inline-block";
+            }
+        }
 
         // Running as Administrator? Otherwise each system-wide change shows a Windows prompt.
         async function refreshElevationHint() {

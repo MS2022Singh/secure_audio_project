@@ -217,6 +217,31 @@ impl fmt::Display for Warning {
 pub struct EqApoConfig {
     pub stages: Vec<(DeviceSel, Stage)>,
     pub warnings: Vec<Warning>,
+    /// How each line was processed (descriptions without any configuration values), for the
+    /// "Explain configuration" view.
+    pub trace: Vec<TraceLine>,
+    /// Channel names by index (device channels, then virtual channels).
+    pub channel_names: Vec<String>,
+    /// How many of `channel_names` are the device's own channels (the rest are virtual).
+    pub device_channel_count: usize,
+}
+
+/// One processed line. Contains command types and channel names only, never values.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraceLine {
+    pub file: String,
+    pub line: usize,
+    /// "applied" (adds processing) or "control" (selects channels, devices, conditions...).
+    pub kind: &'static str,
+    pub what: String,
+    /// Channels the processing acts on.
+    pub channels: Vec<String>,
+    /// Copy: (target, sources).
+    pub routes: Vec<(String, Vec<String>)>,
+    /// Virtual channels created by this line.
+    pub creates: Vec<String>,
+    /// Device block the line belongs to ("" = all devices).
+    pub device: String,
 }
 
 impl EqApoConfig {
@@ -285,6 +310,7 @@ pub struct ChanMap {
     names: Vec<String>,
     /// Virtual channels created by `Copy` (upper-case name -> index after the device channels).
     virt: HashMap<String, usize>,
+    virt_names: Vec<String>,
     next: usize,
     /// Diviora extensions (`DivioraExtensions: on`).
     pub extended: bool,
@@ -312,9 +338,21 @@ pub fn standard_channel_names(n: usize) -> Vec<String> {
 impl ChanMap {
     pub fn new(device_channels: usize) -> ChanMap {
         let n = device_channels.clamp(1, MAX_CHANNELS);
-        ChanMap { names: standard_channel_names(n), virt: HashMap::new(), next: n, extended: false }
+        ChanMap { names: standard_channel_names(n), virt: HashMap::new(), virt_names: Vec::new(), next: n, extended: false }
     }
     pub fn device_channels(&self) -> usize { self.names.len() }
+    /// Name of channel `i` (device or virtual).
+    pub fn name(&self, i: usize) -> String {
+        if i < self.names.len() { self.names[i].clone() }
+        else { self.virt_names.get(i - self.names.len()).cloned().unwrap_or_else(|| format!("#{}", i + 1)) }
+    }
+    pub fn all_names(&self) -> Vec<String> { (0..self.next).map(|i| self.name(i)).collect() }
+    fn sel_names(&self, sel: &ChannelSel) -> Vec<String> {
+        match sel {
+            ChannelSel::All => self.all_names(),
+            ChannelSel::List(v) => v.iter().map(|i| self.name(*i)).collect(),
+        }
+    }
     /// All channels that exist now (device + virtual), for "Channel: all".
     pub fn all_now(&self) -> ChannelSel { ChannelSel::List((0..self.next).collect()) }
     /// The device channels (selection before any Channel: line).
@@ -348,7 +386,8 @@ impl ChanMap {
         if create && !key.is_empty() && !key.as_bytes()[0].is_ascii_digit() && self.next < MAX_CHANNELS {
             let i = self.next;
             self.next += 1;
-            self.virt.insert(key, i);
+            self.virt.insert(key.clone(), i);
+            self.virt_names.push(key);
             return Some(i);
         }
         None
@@ -380,6 +419,8 @@ pub fn parse_with(text: &str, resolver: Option<IncludeResolver>, ctx: &Context) 
     };
     st.channels = st.chans.device_sel();
     parse_into(text, "config", resolver, 0, &mut st, &mut cfg);
+    cfg.channel_names = st.chans.all_names();
+    cfg.device_channel_count = st.chans.device_channels();
     if !st.conds.is_empty() {
         warn(&mut cfg, "config", 0, "If:", "missing EndIf: (block closed at end of file)");
     }
@@ -434,6 +475,8 @@ fn parse_into(
 ) {
     for (idx, raw) in text.lines().enumerate() {
         let lineno = idx + 1;
+        let stages_before = cfg.stages.len();
+        let virt_before = st.chans.next;
         let line = raw.trim().trim_start_matches('\u{feff}').trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -455,6 +498,9 @@ fn parse_into(
                 let parent = st.active();
                 let v = if parent { cond_value(raw_args, st, cfg, file, lineno, line) } else { false };
                 st.conds.push(Cond { parent_active: parent, taken: v, active: v });
+                cfg.trace.push(TraceLine { file: file.to_string(), line: lineno, kind: "control",
+                    what: format!("If: condition is {} for this device/stream, so the block {}", if v { "TRUE" } else { "FALSE" }, if v { "applies" } else { "is skipped" }),
+                    channels: vec![], routes: vec![], creates: vec![], device: device_label(&st.device) });
                 continue;
             }
             "elseif" => {
@@ -629,6 +675,82 @@ fn parse_into(
             "loudnesscorrection" => warn(cfg, file, lineno, line, "LoudnessCorrection follows the Windows volume slider and is not supported; use filters instead"),
             "vst" => warn(cfg, file, lineno, line, "VST plug-ins cannot be loaded into the Diviora engine"),
             _ => warn(cfg, file, lineno, line, ignored("unknown command")),
+        }
+        record_trace(cfg, st, file, lineno, &cmd, stages_before, virt_before);
+    }
+}
+
+fn device_label(d: &DeviceSel) -> String {
+    match d {
+        DeviceSel::All => String::new(),
+        DeviceSel::Matching(p) => p.join("; "),
+    }
+}
+
+/// Describe what one line did, from the stages it produced (no values).
+fn record_trace(cfg: &mut EqApoConfig, st: &ParseState, file: &str, line: usize, cmd: &str, stages_before: usize, virt_before: usize) {
+    let creates: Vec<String> = (virt_before..st.chans.next).map(|i| st.chans.name(i)).collect();
+    let mut push = |kind: &'static str, what: String, channels: Vec<String>, routes: Vec<(String, Vec<String>)>, device: String, creates: Vec<String>| {
+        cfg.trace.push(TraceLine { file: file.to_string(), line, kind, what, channels, routes, creates, device });
+    };
+    let new: Vec<(DeviceSel, Stage)> = cfg.stages[stages_before..].to_vec();
+    for (i, (dev, stage)) in new.iter().enumerate() {
+        let c = |sel: &ChannelSel| st.chans.sel_names(sel);
+        let created = if i == 0 { creates.clone() } else { Vec::new() };
+        let (what, chans, routes) = match stage {
+            Stage::Gain { channels, .. } => ("Gain change (preamp)".to_string(), c(channels), vec![]),
+            Stage::Biquad { spec, channels } => {
+                let kind = match spec.kind {
+                    FilterKind::Peaking => "Peaking filter (frequency, gain, width)",
+                    FilterKind::LowShelf if spec.corner => "Low-shelf filter, corner frequency (LS)",
+                    FilterKind::LowShelf => "Low-shelf filter, centre frequency (LSC)",
+                    FilterKind::HighShelf if spec.corner => "High-shelf filter, corner frequency (HS)",
+                    FilterKind::HighShelf => "High-shelf filter, centre frequency (HSC)",
+                    FilterKind::LowPass => "Low-pass filter",
+                    FilterKind::HighPass => "High-pass filter",
+                    FilterKind::BandPass => "Band-pass filter",
+                    FilterKind::Notch => "Notch filter",
+                    FilterKind::AllPass => "All-pass filter",
+                    FilterKind::LowShelf1 => "First-order low-shelf (extension)",
+                    FilterKind::HighShelf1 => "First-order high-shelf (extension)",
+                    FilterKind::LowPass1 => "First-order low-pass (extension)",
+                    FilterKind::HighPass1 => "First-order high-pass (extension)",
+                };
+                let width = match spec.shape {
+                    Shape::Q(_) => "Q", Shape::BwOct(_) => "bandwidth in octaves", Shape::SlopeDbPerOct(_) => "slope",
+                };
+                (format!("{}, width given as {}", kind, width), c(channels), vec![])
+            }
+            Stage::Iir { b, channels, .. } => (format!("IIR filter of order {}", b.len().saturating_sub(1)), c(channels), vec![]),
+            Stage::Delay { channels, .. } => ("Delay".to_string(), c(channels), vec![]),
+            Stage::GraphicEq { points, channels } => (format!("Graphic EQ ({} points, linear phase)", points.len()), c(channels), vec![]),
+            Stage::Convolution { channels, ir } => (format!("Convolution with an uploaded impulse response ({} channel(s))", ir.channels.len()), c(channels), vec![]),
+            Stage::Watermark(_) => ("Diviora watermark".to_string(), vec![], vec![]),
+            Stage::Mix { routes } => {
+                let r: Vec<(String, Vec<String>)> = routes.iter()
+                    .map(|(d, srcs)| (st.chans.name(*d), srcs.iter().map(|(s, _)| st.chans.name(*s)).collect()))
+                    .collect();
+                ("Copy / mix (each target = sum of its sources × factor; other channels unchanged)".to_string(),
+                 r.iter().map(|(d, _)| d.clone()).collect(), r)
+            }
+        };
+        push("applied", what, chans, routes, device_label(dev), created);
+    }
+    if new.is_empty() {
+        let what = match cmd {
+            "channel" => Some(format!("Select channels for the following lines: {}", st.chans.sel_names(&st.channels).join(" "))),
+            "device" => Some(match &st.device {
+                DeviceSel::All => "Following lines apply to all devices".to_string(),
+                DeviceSel::Matching(_) => "Following lines apply only to matching devices".to_string(),
+            }),
+            "include" => Some("Include another file".to_string()),
+            "stage" => Some("Stage hint (no effect on processing)".to_string()),
+            "divioraextensions" => Some(format!("Diviora extensions {}", if st.chans.extended { "ON" } else { "off" })),
+            _ => None,
+        };
+        if let Some(w) = what {
+            let chans = if cmd == "channel" { st.chans.sel_names(&st.channels) } else { vec![] };
+            push("control", w, chans, vec![], device_label(&st.device), vec![]);
         }
     }
 }

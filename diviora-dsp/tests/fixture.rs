@@ -60,3 +60,19 @@ fn same_structure_without_extensions_behaves_like_equalizer_apo() {
     let e = diviora_dsp::analysis::measure_effect(&text, 48000, 2, None);
     assert!(e.channel_mixing > 0.05, "{:?}", e);
 }
+
+/// The "Explain configuration" trace describes every line without any configuration value.
+#[test]
+fn trace_explains_without_values() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/");
+    let text: String = std::fs::read_to_string(format!("{}virtual_channels_config.txt", dir)).unwrap()
+        .lines().filter(|l| l.trim() != "DivioraExtensions: on").map(|l| format!("{}\n", l)).collect();
+    let cfg = eqapo::parse(&text, None);
+    assert!(cfg.trace.iter().any(|t| t.what.starts_with("Copy / mix") && !t.creates.is_empty()));
+    assert!(cfg.trace.iter().any(|t| t.what.starts_with("Select channels") && t.channels.contains(&"RLX".to_string())));
+    assert!(cfg.channel_names.starts_with(&["L".to_string(), "R".to_string()]) && cfg.channel_names.contains(&"CX".to_string()));
+    for t in &cfg.trace {
+        let all = format!("{} {:?} {:?} {:?}", t.what, t.channels, t.routes, t.creates);
+        assert!(!all.contains("Hz") && !all.contains("dB") && !all.contains("ms"), "value leaked: {}", all);
+    }
+}

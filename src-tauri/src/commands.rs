@@ -103,6 +103,75 @@ fn apply_system_wide_now() -> Result<String, String> {
     }
 }
 
+/// "Explain configuration": how Equalizer APO 1.4 processes the uploaded file, line by line,
+/// as a flow and a channel-routing table. Contains command types and channel names only:
+/// no frequencies, gains, Q, factors, delays or file contents.
+#[tauri::command]
+pub fn explain_apo_profile() -> Result<serde_json::Value, String> {
+    require_developer()?;
+    let text = STAGED_PROFILE.lock().unwrap().clone().ok_or("Upload a configuration first.")?;
+    let speakers = crate::playback::manager::default_output_name();
+    let ctx = diviora_dsp::Context { sample_rate: 48000, channels: 2, device_name: speakers.clone(), ..Default::default() };
+    let cfg = diviora_dsp::parse_with(&text, None, &ctx);
+    let mask = |s: &str| -> String {
+        let mut out = String::new();
+        let mut prev_digit = false;
+        for c in s.chars() {
+            if c.is_ascii_digit() { if !prev_digit { out.push('#'); } prev_digit = true; }
+            else if prev_digit && (c == '.' || c == ',') { /* part of the number */ }
+            else { out.push(c); prev_digit = false; }
+        }
+        out
+    };
+    let mut lines: Vec<serde_json::Value> = cfg.trace.iter().map(|t| serde_json::json!({
+        "file": if t.file == "config" { "config".to_string() } else { "include".to_string() },
+        "line": t.line, "kind": t.kind, "what": t.what, "channels": t.channels,
+        "routes": t.routes.iter().map(|(d, s)| serde_json::json!({ "target": d, "sources": s })).collect::<Vec<_>>(),
+        "creates": t.creates, "device_block": !t.device.is_empty(),
+    })).collect();
+    for w in &cfg.warnings {
+        let command = w.text.split(':').next().unwrap_or("").trim().to_string();
+        let kind = if w.reason.starts_with("partly applied") { "partly" } else { "ignored" };
+        lines.push(serde_json::json!({
+            "file": if w.file == "config" { "config".to_string() } else { "include".to_string() },
+            "line": w.line, "kind": kind,
+            "what": format!("{}: {}", mask(&command), mask(&w.reason.replace("Equalizer APO 1.4.2", "EQAPO_VER")).replace("EQAPO_VER", "Equalizer APO 1.4.2")),
+            "channels": [], "routes": [], "creates": [], "device_block": false,
+        }));
+    }
+    lines.sort_by_key(|l| (l["file"].as_str().unwrap_or("") != "config", l["line"].as_u64().unwrap_or(0)));
+    let applied = cfg.trace.iter().filter(|t| t.kind == "applied").count();
+    Ok(serde_json::json!({
+        "channels": cfg.channel_names,
+        "device_channels": cfg.device_channel_count,
+        "speakers": speakers,
+        "applied": applied,
+        "ignored": cfg.warnings.iter().filter(|w| !w.reason.starts_with("partly applied")).count(),
+        "partly": cfg.warnings.iter().filter(|w| w.reason.starts_with("partly applied")).count(),
+        "lines": lines,
+    }))
+}
+
+/// Save the explanation report (HTML, no configuration values) on the Desktop.
+#[tauri::command]
+pub fn save_explain_report(html: String) -> Result<String, String> {
+    require_developer()?;
+    let path = desktop_file("Diviora_Configuration_Explained.html");
+    fs::write(&path, html).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+/// What the developer panel should show when it opens: an uploaded (staged) configuration,
+/// and whether a locked configuration is active in Windows audio.
+#[tauri::command]
+pub fn apo_config_state() -> serde_json::Value {
+    serde_json::json!({
+        "staged": STAGED_PROFILE.lock().unwrap().is_some(),
+        "enabled": *EQ_ENABLED.lock().unwrap(),
+        "locked_file": cfg!(windows) && crate::apo_config::config_path().exists(),
+    })
+}
+
 /// Is the app running with the rights to change the system-wide sound without prompts?
 #[tauri::command]
 pub fn is_app_elevated() -> bool {
